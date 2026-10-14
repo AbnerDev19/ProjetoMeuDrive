@@ -37,6 +37,7 @@ class ClientActivity : Activity() {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(32), 0, 0)
+            setBackgroundColor(Ui.BG)
         }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -46,14 +47,14 @@ class ClientActivity : Activity() {
             hint = "Endereço do servidor (ex.: 100.64.1.2:8080)"
             setText(prefs.getString("client_url", ""))
             setSingleLine()
+            setTextColor(Ui.TEXT)
+            background = Ui.shape(context, Ui.SIDE, 22, Ui.LINE)
+            setPadding(dp(16), 0, dp(16), 0)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
-        val go = Button(this).apply {
-            text = "Conectar"
-            setOnClickListener { connect() }
-        }
-        bar.addView(addr, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        bar.addView(go)
+        val go = Ui.primary(this, "Conectar") { connect() }
+        bar.addView(addr, LinearLayout.LayoutParams(0, dp(44), 1f))
+        bar.addView(go, LinearLayout.LayoutParams(-2, dp(44)).apply { leftMargin = dp(8) })
 
         web = WebView(this)
         web.settings.javaScriptEnabled = true

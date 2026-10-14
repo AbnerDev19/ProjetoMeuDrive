@@ -3,6 +3,7 @@ package com.meudrive
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -22,36 +23,40 @@ import java.net.NetworkInterface
 class ServerActivity : Activity() {
 
     private lateinit var status: TextView
+    private lateinit var checks: TextView
     private lateinit var toggle: Button
     private lateinit var pw: EditText
 
     private fun prefs() = getSharedPreferences("cfg", 0)
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        val col = LinearLayout(this).apply {
+        val ctx = this
+        val root = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(40), dp(20), dp(20))
+            setPadding(Ui.dp(ctx, 16), Ui.dp(ctx, 44), Ui.dp(ctx, 16), Ui.dp(ctx, 24))
         }
-        fun text(t: String, size: Float = 15f) = TextView(this).apply {
-            text = t; textSize = size; setPadding(0, dp(8), 0, dp(8))
-        }
-        fun button(t: String, onClick: () -> Unit) = Button(this).apply {
-            text = t; setOnClickListener { onClick() }
-        }
+        root.addView(Ui.text(ctx, "Servidor", 26f, Ui.TEXT, true))
+        root.addView(Ui.text(ctx, "Este celular guarda seus arquivos.", 14f, Ui.MUTED))
 
-        col.addView(text("Meu Drive", 26f))
-        status = text("")
-        col.addView(status)
+        val c1 = Ui.card(ctx).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = Ui.dp(ctx, 16) }
+        status = Ui.text(ctx, "", 16f, Ui.TEXT, true)
+        c1.addView(status)
+        toggle = Ui.primary(ctx, "Ligar servidor") { toggleServer() }
+        c1.addView(toggle, Ui.lp(ctx))
+        root.addView(c1)
 
-        pw = EditText(this).apply {
-            hint = "Defina uma senha (mín. 6 caracteres)"
+        val c2 = Ui.card(ctx)
+        c2.addView(Ui.text(ctx, "Senha de acesso", 16f, Ui.TEXT, true))
+        pw = EditText(ctx).apply {
+            hint = "Mínimo 6 caracteres"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setTextColor(Ui.TEXT)
+            background = Ui.shape(ctx, Ui.SIDE, 10, Ui.LINE)
+            setPadding(Ui.dp(ctx, 14), Ui.dp(ctx, 12), Ui.dp(ctx, 14), Ui.dp(ctx, 12))
         }
-        col.addView(pw)
-        col.addView(button("Salvar senha") {
+        c2.addView(pw, Ui.lp(ctx, 8, -1))
+        c2.addView(Ui.secondary(ctx, "Salvar senha") {
             val p = pw.text.toString()
             if (p.length < 6) toast("A senha precisa ter pelo menos 6 caracteres")
             else {
@@ -60,31 +65,36 @@ class ServerActivity : Activity() {
                 toast("Senha salva")
                 refresh()
             }
-        })
+        }, Ui.lp(ctx))
+        root.addView(c2)
 
-        toggle = button("Ligar servidor") { toggleServer() }
-        col.addView(toggle)
-
-        col.addView(button("1) Permitir acesso a todos os arquivos") {
-            val i = Intent(
-                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                Uri.parse("package:$packageName")
+        val c3 = Ui.card(ctx)
+        c3.addView(Ui.text(ctx, "Para ficar ligado 24h", 16f, Ui.TEXT, true))
+        checks = Ui.text(ctx, "", 14f, Ui.MUTED)
+        c3.addView(checks)
+        c3.addView(Ui.secondary(ctx, "1. Permitir acesso aos arquivos") {
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))
             )
-            startActivity(i)
-        })
-        col.addView(button("2) Não otimizar bateria (manter 24h)") {
+        }, Ui.lp(ctx))
+        c3.addView(Ui.secondary(ctx, "2. Não otimizar bateria") {
             startActivity(
                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
             )
-        })
+        }, Ui.lp(ctx))
+        root.addView(c3)
 
-        col.addView(text(
-            "Acesso de fora de casa: instale o Tailscale (gratuito) no celular e no PC, " +
-                "entre na mesma conta e use o endereço 100.x.x.x do celular no navegador do PC, " +
-                "ex.: http://100.x.x.x:8080. Não abra a porta 8080 no roteador."
+        val c4 = Ui.card(ctx)
+        c4.addView(Ui.text(ctx, "Acessar de fora de casa", 16f, Ui.TEXT, true))
+        c4.addView(Ui.text(
+            ctx,
+            "Instale o Tailscale (gratuito) neste celular e no outro aparelho, entre na mesma conta " +
+                "e use o endereço 100.x.x.x:8080. Não abra a porta 8080 no roteador.",
+            14f, Ui.MUTED
         ))
+        root.addView(c4)
 
-        setContentView(ScrollView(this).apply { addView(col) })
+        setContentView(ScrollView(ctx).apply { setBackgroundColor(Ui.SIDE); addView(root) })
 
         if (Build.VERSION.SDK_INT >= 33)
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
@@ -111,16 +121,18 @@ class ServerActivity : Activity() {
     private fun refresh() {
         val on = prefs().getBoolean("on", false)
         toggle.text = if (on) "Desligar servidor" else "Ligar servidor"
+        val sb = StringBuilder(if (on) "● Servidor ligado" else "○ Servidor desligado")
+        if (on) ips().forEach { sb.append("\nhttp://").append(it).append(":").append(Cfg.PORT) }
+        status.text = sb.toString()
+        status.setTextColor(if (on) Color.parseColor("#0F9D58") else Ui.MUTED)
+
         val allFiles = Environment.isExternalStorageManager()
         val battery = (getSystemService(POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(packageName)
-        val sb = StringBuilder()
-        sb.append(if (on) "Servidor LIGADO\n" else "Servidor desligado\n")
-        if (on) ips().forEach { sb.append("http://").append(it).append(":").append(Cfg.PORT).append("\n") }
-        sb.append("\nPasta dos arquivos:\n").append(Cfg.rootDir(this).path)
-        sb.append("\n\nAcesso a todos os arquivos: ").append(if (allFiles) "OK" else "pendente (passo 1)")
-        sb.append("\nBateria sem restrição: ").append(if (battery) "OK" else "pendente (passo 2)")
-        sb.append("\nSenha: ").append(if (prefs().getString("pwhash", null) != null) "definida" else "pendente")
-        status.text = sb.toString()
+        val hasPw = prefs().getString("pwhash", null) != null
+        checks.text = (if (hasPw) "✓" else "✗") + " Senha definida\n" +
+            (if (allFiles) "✓" else "✗") + " Acesso a todos os arquivos\n" +
+            (if (battery) "✓" else "✗") + " Bateria sem restrição\n\n" +
+            "Pasta: " + Cfg.rootDir(this).path
     }
 
     private fun ips(): List<String> {
