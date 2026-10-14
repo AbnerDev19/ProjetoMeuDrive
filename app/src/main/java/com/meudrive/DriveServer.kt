@@ -23,11 +23,19 @@ object Cfg {
         MessageDigest.getInstance("SHA-256").digest(p.toByteArray())
             .joinToString("") { "%02x".format(it) }
 
+    fun ips(): List<String> = try {
+        java.net.NetworkInterface.getNetworkInterfaces().toList()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { it.inetAddresses.toList() }
+            .filterIsInstance<java.net.Inet4Address>()
+            .mapNotNull { it.hostAddress }
+    } catch (e: Exception) { emptyList() }
+
     fun rootDir(ctx: Context): File {
         val base = if (Environment.isExternalStorageManager())
             Environment.getExternalStorageDirectory()
         else ctx.getExternalFilesDir(null) ?: ctx.filesDir
-        return File(base, "MeuDrive").also { it.mkdirs() }
+        return File(base, "MeuDrive").also { it.mkdirs(); File(it, "Transferencias").mkdirs() }
     }
 }
 

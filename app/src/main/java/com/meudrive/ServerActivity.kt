@@ -46,6 +46,24 @@ class ServerActivity : Activity() {
         c1.addView(toggle, Ui.lp(ctx))
         root.addView(c1)
 
+        val cT = Ui.card(ctx)
+        cT.addView(Ui.text(ctx, "Enviar para o computador", 16f, Ui.TEXT, true))
+        cT.addView(Ui.text(
+            ctx,
+            "Escolha vídeos, fotos ou arquivos do celular. Eles vão para a pasta Transferências e " +
+                "você baixa pelo navegador do PC. Também dá para usar Compartilhar > Meu Drive direto na galeria.",
+            14f, Ui.MUTED
+        ))
+        cT.addView(Ui.primary(ctx, "Escolher arquivos do celular") {
+            val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            }
+            startActivityForResult(i, 40)
+        }, Ui.lp(ctx))
+        root.addView(cT)
+
         val c2 = Ui.card(ctx)
         c2.addView(Ui.text(ctx, "Senha de acesso", 16f, Ui.TEXT, true))
         pw = EditText(ctx).apply {
@@ -103,6 +121,25 @@ class ServerActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refresh()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != 40 || resultCode != RESULT_OK || data == null) return
+        val uris = ArrayList<Uri>()
+        val cd = data.clipData
+        if (cd != null) {
+            for (k in 0 until cd.itemCount) uris.add(cd.getItemAt(k).uri)
+        } else data.data?.let { uris.add(it) }
+        if (uris.isEmpty()) return
+        val i = Intent(this, ShareActivity::class.java).apply {
+            action = Intent.ACTION_SEND_MULTIPLE
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            clipData = cd ?: android.content.ClipData.newRawUri("", uris[0])
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(i)
     }
 
     private fun toggleServer() {

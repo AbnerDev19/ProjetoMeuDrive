@@ -117,7 +117,10 @@ svg{fill:currentColor}
         <button onclick="mkdir()"><svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3v2z"/></svg>Nova pasta</button>
       </div>
     </div>
-    <nav class="nav"><a class="on" onclick="load('')"><svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>Meus arquivos</a></nav>
+    <nav class="nav">
+      <a id="nv0" class="on" onclick="load('')"><svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>Meus arquivos</a>
+      <a id="nv1" onclick="load('Transferencias')"><svg viewBox="0 0 24 24"><path d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/></svg>Transferências</a>
+    </nav>
   </aside>
 
   <section class="main">
@@ -190,11 +193,13 @@ function login(){
 
 function load(p){
   cur = p; q = ''; g('q').value = ''; g('menu').hidden = true;
+  var tr = (p === 'Transferencias' || p.indexOf('Transferencias/') === 0);
+  g('nv0').className = tr ? '' : 'on'; g('nv1').className = tr ? 'on' : '';
   fetch('/api/list?path=' + encodeURIComponent(p)).then(function(r){
     if (r.status === 401){ show(false); return null; }
     return r.json();
   }).then(function(d){
-    if (!d) return;
+    if (!d || !d.items) return;
     show(true); items = d.items; crumbs(); draw();
   });
 }
