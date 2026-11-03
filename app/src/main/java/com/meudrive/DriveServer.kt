@@ -1,6 +1,7 @@
 package com.meudrive
 
 import android.content.Context
+import android.os.Build
 import android.os.Environment
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
@@ -18,6 +19,11 @@ import java.util.Collections
 
 object Cfg {
     const val PORT = 8080
+    const val SERVICE_TYPE = "_meudrive._tcp."
+
+    fun deviceName(ctx: Context): String =
+        ctx.getSharedPreferences("cfg", 0).getString("devname", null)?.takeIf { it.isNotBlank() }
+            ?: (Build.MODEL ?: "Android")
 
     fun hash(p: String): String =
         MessageDigest.getInstance("SHA-256").digest(p.toByteArray())
@@ -71,9 +77,13 @@ class DriveServer(private val ctx: Context) : NanoHTTPD(Cfg.PORT) {
         return when (uri) {
             "/api/list" -> list(rel)
             "/api/download" -> download(rel)
-            "/api/upload" -> upload(rel, s.parms["file"], files["file"])
+            "/api/upload" -> upload(rel, s.parms["file"], files["file"], s.parms["from"])
             "/api/mkdir" -> mkdir(rel, s.parms["name"])
             "/api/delete" -> delete(rel)
+            "/api/whoami" -> json(Response.Status.OK, JSONObject().put("name", Cfg.deviceName(ctx)))
+            "/api/send-text" -> sendText(s.parms["text"], s.parms["from"])
+            "/api/inbox" -> inbox()
+            "/api/inbox/delete" -> inboxDelete(s.parms["id"])
             else -> json(Response.Status.NOT_FOUND, JSONObject().put("error", "nao encontrado"))
         }
     }
@@ -99,6 +109,12 @@ class DriveServer(private val ctx: Context) : NanoHTTPD(Cfg.PORT) {
     }
 
     private fun authed(s: IHTTPSession): Boolean {
+        // outros aparelhos (e o app) se identificam com a chave da casa no cabeçalho
+        val key = s.headers["x-key"]
+        val stored = ctx.getSharedPreferences("cfg", 0).getString("pwhash", null)
+        if (key != null && stored != null &&
+            MessageDigest.isEqual(key.toByteArray(), stored.toByteArray())
+        ) return true
         val c = s.headers["cookie"] ?: return false
         return c.split(";").map { it.trim() }
             .any { it.startsWith("sid=") && tokens.contains(it.substring(4)) }
@@ -140,7 +156,7 @@ class DriveServer(private val ctx: Context) : NanoHTTPD(Cfg.PORT) {
         return r
     }
 
-    private fun upload(rel: String, name: String?, tmpPath: String?): Response {
+    private fun upload(rel: String, name: String?, tmpPath: String?, from: String?): Response {
         val dir = resolve(rel) ?: return bad()
         if (name == null || tmpPath == null) return bad("nenhum arquivo enviado")
         dir.mkdirs()
@@ -156,6 +172,11 @@ class DriveServer(private val ctx: Context) : NanoHTTPD(Cfg.PORT) {
         val tmp = File(tmpPath)
         tmp.copyTo(dest)
         tmp.delete()
+        if (!from.isNullOrBlank()) {
+            val shown = if (rel.isEmpty()) dest.name else rel + "/" + dest.name
+            Inbox.add(ctx, "file", dest.name, from, shown)
+            Notifier.received(ctx, "Arquivo de " + from, dest.name)
+        }
         return json(Response.Status.OK, JSONObject().put("ok", true).put("name", dest.name))
     }
 
@@ -172,6 +193,30 @@ class DriveServer(private val ctx: Context) : NanoHTTPD(Cfg.PORT) {
         if (f == root.canonicalFile) return bad("nao pode apagar a raiz")
         if (!f.exists()) return bad("nao existe")
         f.deleteRecursively()
+        return json(Response.Status.OK, JSONObject().put("ok", true))
+    }
+
+    // ---------- enviar / caixa de entrada ----------
+
+    private fun sendText(text: String?, from: String?): Response {
+        val t = text?.trim().orEmpty()
+        if (t.isEmpty()) return bad("texto vazio")
+        if (t.length > 100_000) return bad("texto grande demais")
+        val who = from?.takeIf { it.isNotBlank() } ?: "outro aparelho"
+        Inbox.add(ctx, "text", t, who)
+        Notifier.received(ctx, "De " + who, t.take(300))
+        return json(Response.Status.OK, JSONObject().put("ok", true))
+    }
+
+    private fun inbox(): Response {
+        val arr = JSONArray()
+        Inbox.all(ctx).forEach { arr.put(Inbox.toJson(it)) }
+        return json(Response.Status.OK, JSONObject().put("items", arr))
+    }
+
+    private fun inboxDelete(id: String?): Response {
+        val n = id?.toLongOrNull() ?: return bad("id invalido")
+        Inbox.remove(ctx, n)
         return json(Response.Status.OK, JSONObject().put("ok", true))
     }
 

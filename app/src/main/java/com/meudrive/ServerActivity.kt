@@ -26,6 +26,7 @@ class ServerActivity : Activity() {
     private lateinit var checks: TextView
     private lateinit var toggle: Button
     private lateinit var pw: EditText
+    private lateinit var devName: EditText
 
     private fun prefs() = getSharedPreferences("cfg", 0)
 
@@ -64,8 +65,31 @@ class ServerActivity : Activity() {
         }, Ui.lp(ctx))
         root.addView(cT)
 
+        val cN = Ui.card(ctx)
+        cN.addView(Ui.text(ctx, "Nome deste aparelho", 16f, Ui.TEXT, true))
+        cN.addView(Ui.text(ctx, "É assim que ele aparece para os outros aparelhos da casa.", 14f, Ui.MUTED))
+        devName = EditText(ctx).apply {
+            hint = "Ex.: Celular da sala"
+            setText(Cfg.deviceName(ctx))
+            setSingleLine()
+            setTextColor(Ui.TEXT)
+            background = Ui.shape(ctx, Ui.SIDE, 10, Ui.LINE)
+            setPadding(Ui.dp(ctx, 14), Ui.dp(ctx, 12), Ui.dp(ctx, 14), Ui.dp(ctx, 12))
+        }
+        cN.addView(devName, Ui.lp(ctx, 8, -1))
+        cN.addView(Ui.secondary(ctx, "Salvar nome") {
+            val n = devName.text.toString().trim()
+            if (n.isEmpty()) toast("Digite um nome")
+            else {
+                prefs().edit().putString("devname", n).apply()
+                toast("Nome salvo. Desligue e ligue o servidor para valer.")
+            }
+        }, Ui.lp(ctx))
+        root.addView(cN)
+
         val c2 = Ui.card(ctx)
-        c2.addView(Ui.text(ctx, "Senha de acesso", 16f, Ui.TEXT, true))
+        c2.addView(Ui.text(ctx, "Senha da casa", 16f, Ui.TEXT, true))
+        c2.addView(Ui.text(ctx, "Use a MESMA senha em todos os aparelhos para eles poderem se enviar coisas.", 14f, Ui.MUTED))
         pw = EditText(ctx).apply {
             hint = "Mínimo 6 caracteres"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD

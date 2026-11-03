@@ -94,6 +94,12 @@ svg{fill:currentColor}
 .seg{display:none}
 .toast{left:14px;right:14px;width:auto}
 }
+.irow{display:grid;grid-template-columns:1fr 112px;align-items:center;gap:12px;padding:6px 12px;min-height:58px;border-bottom:1px solid var(--line);cursor:pointer}
+.irow:hover{background:var(--hover)}
+.irow .acts{opacity:1}
+.itx{min-width:0}
+.itx b{font-weight:400;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.itx small{color:var(--muted)}
 </style>
 </head>
 <body>
@@ -115,11 +121,14 @@ svg{fill:currentColor}
       <div class="menu" id="menu" hidden>
         <button onclick="g('f').click()"><svg viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>Enviar arquivos</button>
         <button onclick="mkdir()"><svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3v2z"/></svg>Nova pasta</button>
+        <button onclick="sendText()"><svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>Enviar texto ou link</button>
+        <button onclick="loadInbox()"><svg viewBox="0 0 24 24"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 12h-4a3 3 0 0 1-6 0H5V5h14v10z"/></svg>Caixa de entrada</button>
       </div>
     </div>
     <nav class="nav">
       <a id="nv0" class="on" onclick="load('')"><svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>Meus arquivos</a>
       <a id="nv1" onclick="load('Transferencias')"><svg viewBox="0 0 24 24"><path d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/></svg>Transferências</a>
+      <a id="nv2" onclick="loadInbox()"><svg viewBox="0 0 24 24"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 12h-4a3 3 0 0 1-6 0H5V5h14v10z"/></svg>Caixa de entrada</a>
     </nav>
   </aside>
 
@@ -134,6 +143,7 @@ svg{fill:currentColor}
     <div class="crumbs" id="crumbs"></div>
     <div class="content">
       <div id="files"></div>
+      <div class="empty" id="emptyIn" hidden>Caixa vazia<br>Textos, links e arquivos enviados para este aparelho aparecem aqui</div>
       <div class="empty" id="empty" hidden>Nada por aqui<br>Arraste arquivos para cá ou use o botão "Novo"</div>
     </div>
   </section>
@@ -144,7 +154,7 @@ svg{fill:currentColor}
 
 <script>
 function g(x){ return document.getElementById(x); }
-var cur = '', items = [], view = 'list', q = '';
+var cur = '', items = [], view = 'list', q = '', mode = 'files', inboxItems = [], poll = null;
 try { view = localStorage.getItem('view') || 'list'; } catch (e) {}
 
 var FOLDER = '<svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>';
@@ -192,9 +202,9 @@ function login(){
 }
 
 function load(p){
-  cur = p; q = ''; g('q').value = ''; g('menu').hidden = true;
+  mode = 'files'; clearInterval(poll); cur = p; q = ''; g('q').value = ''; g('menu').hidden = true;
   var tr = (p === 'Transferencias' || p.indexOf('Transferencias/') === 0);
-  g('nv0').className = tr ? '' : 'on'; g('nv1').className = tr ? 'on' : '';
+  g('nv0').className = tr ? '' : 'on'; g('nv1').className = tr ? 'on' : ''; g('nv2').className = '';
   fetch('/api/list?path=' + encodeURIComponent(p)).then(function(r){
     if (r.status === 401){ show(false); return null; }
     return r.json();
@@ -271,6 +281,8 @@ function card(it){
 }
 
 function draw(){
+  if (mode === 'inbox'){ drawInbox(); return; }
+  g('emptyIn').hidden = true;
   var box = g('files'); box.textContent = '';
   box.className = view === 'grid' ? 'grid' : '';
   var arr = items.filter(function(it){ return it.name.toLowerCase().indexOf(q) >= 0; });
@@ -297,6 +309,100 @@ function mkdir(){
 }
 function toggleMenu(e){ e.stopPropagation(); var m = g('menu'); m.hidden = !m.hidden; }
 document.addEventListener('click', function(){ g('menu').hidden = true; });
+
+var I_CP = '<svg viewBox="0 0 24 24"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>';
+var I_OP = '<svg viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>';
+
+function flash(m){
+  var t = g('toast'); g('ttxt').textContent = m; g('tbar').style.width = '0%'; t.hidden = false;
+  setTimeout(function(){ t.hidden = true; }, 1500);
+}
+function copyText(t){
+  function fb(){
+    var a = document.createElement('textarea');
+    a.value = t; a.style.position = 'fixed'; a.style.opacity = '0';
+    document.body.appendChild(a); a.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(a);
+  }
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).catch(fb); else fb();
+  flash('Copiado');
+}
+function isLink(t){ t = t.trim(); return (t.indexOf('http://') === 0 || t.indexOf('https://') === 0) && t.indexOf(' ') < 0 && t.indexOf('\n') < 0; }
+
+function sendText(){
+  g('menu').hidden = true;
+  var t = prompt('Texto ou link para enviar para este aparelho:');
+  if (!t) return;
+  var b = new URLSearchParams(); b.set('text', t); b.set('from', 'Navegador');
+  fetch('/api/send-text', {method:'POST', body:b}).then(function(r){
+    flash(r.ok ? 'Enviado' : 'Falhou ao enviar');
+    if (mode === 'inbox') fetchInbox();
+  });
+}
+
+function loadInbox(){
+  mode = 'inbox'; cur = ''; q = ''; g('q').value = ''; g('menu').hidden = true;
+  g('nv0').className = ''; g('nv1').className = ''; g('nv2').className = 'on';
+  fetchInbox();
+  clearInterval(poll);
+  poll = setInterval(function(){ if (mode === 'inbox') fetchInbox(); }, 4000);
+}
+function fetchInbox(){
+  fetch('/api/inbox').then(function(r){
+    if (r.status === 401){ show(false); return null; }
+    return r.json();
+  }).then(function(d){
+    if (!d || !d.items) return;
+    show(true); inboxItems = d.items;
+    if (mode === 'inbox'){ crumbsInbox(); drawInbox(); }
+  });
+}
+function crumbsInbox(){
+  var c = g('crumbs'); c.textContent = '';
+  c.appendChild(crumb('Meu Drive', '', false));
+  var sp = document.createElement('span'); sp.textContent = '›'; c.appendChild(sp);
+  var a = document.createElement('a'); a.textContent = 'Caixa de entrada'; a.style.fontWeight = '600'; c.appendChild(a);
+}
+function delIn(id){
+  var b = new URLSearchParams(); b.set('id', id);
+  fetch('/api/inbox/delete', {method:'POST', body:b}).then(function(){ fetchInbox(); });
+}
+function inRow(it){
+  var r = document.createElement('div'); r.className = 'irow';
+  var link = it.kind === 'text' && isLink(it.text);
+  r.onclick = function(){
+    if (it.kind === 'file') dl(it.path);
+    else if (link) window.open(it.text.trim(), '_blank');
+    else copyText(it.text);
+  };
+  var n = document.createElement('div'); n.className = 'nm';
+  var ic = document.createElement('div'); ic.className = 'ic';
+  ic.style.background = it.kind === 'file' ? COL.doc : (link ? COL.vid : COL.img);
+  ic.textContent = it.kind === 'file' ? 'ARQ' : (link ? 'LINK' : 'TXT');
+  var tx = document.createElement('div'); tx.className = 'itx';
+  var b = document.createElement('b'); b.textContent = it.text.split('\n')[0];
+  var sm = document.createElement('small');
+  sm.textContent = 'de ' + (it.from || 'outro aparelho') + ' · ' + new Date(it.time).toLocaleString('pt-BR');
+  tx.appendChild(b); tx.appendChild(sm);
+  n.appendChild(ic); n.appendChild(tx);
+  var a = document.createElement('div'); a.className = 'acts';
+  if (it.kind === 'file') a.appendChild(btn(I_DL, 'Baixar', function(){ dl(it.path); }));
+  else {
+    a.appendChild(btn(I_CP, 'Copiar', function(){ copyText(it.text); }));
+    if (link) a.appendChild(btn(I_OP, 'Abrir link', function(){ window.open(it.text.trim(), '_blank'); }));
+  }
+  a.appendChild(btn(I_DEL, 'Apagar', function(){ delIn(it.id); }));
+  r.appendChild(n); r.appendChild(a);
+  return r;
+}
+function drawInbox(){
+  var box = g('files'); box.textContent = ''; box.className = '';
+  g('empty').hidden = true;
+  var arr = inboxItems.filter(function(it){ return (it.text + ' ' + (it.from || '')).toLowerCase().indexOf(q) >= 0; });
+  g('emptyIn').hidden = arr.length > 0;
+  arr.forEach(function(it){ box.appendChild(inRow(it)); });
+}
 
 function upload(files){
   files = Array.prototype.slice.call(files);

@@ -19,6 +19,7 @@ class ServerService : Service() {
     private var server: DriveServer? = null
     private var wake: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
+    private var discovery: Discovery? = null
 
     override fun onBind(i: Intent?): IBinder? = null
 
@@ -50,6 +51,7 @@ class ServerService : Service() {
                 val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
                 wifi = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "meudrive:wifi")
                     .also { it.acquire() }
+                discovery = Discovery(this).also { it.register(Cfg.deviceName(this), Cfg.PORT) }
                 getSharedPreferences("cfg", 0).edit().putBoolean("on", true).apply()
             } catch (e: Exception) {
                 getSharedPreferences("cfg", 0).edit().putBoolean("on", false).apply()
@@ -60,6 +62,8 @@ class ServerService : Service() {
     }
 
     override fun onDestroy() {
+        discovery?.stop()
+        discovery = null
         server?.stop()
         server = null
         wake?.let { if (it.isHeld) it.release() }

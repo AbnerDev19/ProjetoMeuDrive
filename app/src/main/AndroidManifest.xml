@@ -26,6 +26,7 @@
 
         <activity android:name=".ServerActivity" android:exported="false" />
         <activity android:name=".ClientActivity" android:exported="false" />
+        <activity android:name=".InboxActivity" android:exported="false" />
 
         <activity
             android:name=".ShareActivity"
