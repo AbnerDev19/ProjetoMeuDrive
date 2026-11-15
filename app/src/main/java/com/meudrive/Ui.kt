@@ -10,11 +10,14 @@ import android.widget.TextView
 
 object Ui {
     val BG = Color.parseColor("#FFFFFF")
-    val SIDE = Color.parseColor("#F7F7F5")
-    val TEXT = Color.parseColor("#37352F")
-    val MUTED = Color.parseColor("#787774")
-    val LINE = Color.parseColor("#E9E9E7")
-    val ACCENT = Color.parseColor("#2383E2")
+    val SIDE = Color.parseColor("#F8F9FF")
+    val TEXT = Color.parseColor("#0B1C30")
+    val MUTED = Color.parseColor("#434655")
+    val LINE = Color.parseColor("#E2E8F0")
+    val ACCENT = Color.parseColor("#2563EB")
+
+    private var jakarta: Typeface? = null
+    fun font(c: Context): Typeface = jakarta ?: Typeface.createFromAsset(c.assets, "fonts/jakarta.ttf").also { jakarta = it }
 
     fun dp(c: Context, v: Int) = (v * c.resources.displayMetrics.density).toInt()
 
@@ -28,16 +31,18 @@ object Ui {
         text = t
         textSize = size
         setTextColor(color)
-        if (bold) typeface = Typeface.DEFAULT_BOLD
+        typeface = Typeface.create(font(c), if (bold) Typeface.BOLD else Typeface.NORMAL)
         setPadding(0, dp(c, 4), 0, dp(c, 4))
     }
 
     fun primary(c: Context, t: String, onClick: () -> Unit) = Button(c).apply {
         text = t
         isAllCaps = false
+        typeface = font(c)
+        minHeight = dp(c, 48)
         setTextColor(Color.WHITE)
         stateListAnimator = null
-        background = shape(c, ACCENT, 22)
+        background = shape(c, ACCENT, 12)
         setPadding(dp(c, 20), 0, dp(c, 20), 0)
         setOnClickListener { onClick() }
     }
@@ -45,16 +50,18 @@ object Ui {
     fun secondary(c: Context, t: String, onClick: () -> Unit) = Button(c).apply {
         text = t
         isAllCaps = false
-        setTextColor(TEXT)
+        typeface = font(c)
+        minHeight = dp(c, 48)
+        setTextColor(ACCENT)
         stateListAnimator = null
-        background = shape(c, BG, 22, LINE)
+        background = shape(c, Color.parseColor("#EFF4FF"), 12)
         setPadding(dp(c, 20), 0, dp(c, 20), 0)
         setOnClickListener { onClick() }
     }
 
     fun card(c: Context) = LinearLayout(c).apply {
         orientation = LinearLayout.VERTICAL
-        background = shape(c, BG, 14, LINE)
+        background = shape(c, BG, 20)
         setPadding(dp(c, 16), dp(c, 14), dp(c, 16), dp(c, 16))
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(c, 12) }
     }

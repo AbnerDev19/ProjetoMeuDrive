@@ -1,0 +1,43 @@
+name: Android APK
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
+      - run: python3 scripts/test-pc-server.py
+      - run: ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MeuDrive-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+      - name: Package PC companion
+        run: python3 scripts/package-pc.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MeuDrive-PC
+          path: MeuDrive-PC.zip
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Android-reports
+          path: |
+            app/build/reports/tests/
+            app/build/reports/lint-results-debug.html

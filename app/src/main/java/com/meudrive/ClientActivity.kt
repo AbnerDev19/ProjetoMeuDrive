@@ -20,11 +20,13 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Toast
+import android.app.AlertDialog
 
 class ClientActivity : Activity() {
 
     private lateinit var web: WebView
     private lateinit var addr: EditText
+    private var discovery: Discovery? = null
     private var chooserCb: ValueCallback<Array<Uri>>? = null
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -44,8 +46,8 @@ class ClientActivity : Activity() {
             setPadding(dp(8), dp(4), dp(8), dp(4))
         }
         addr = EditText(this).apply {
-            hint = "Endereço do servidor (ex.: 100.64.1.2:8080)"
-            setText(prefs.getString("client_url", ""))
+            hint = "IP do A06 (ex.: 192.168.1.10:8080)"
+            setText(intent.getStringExtra("url") ?: prefs.getString("client_url", ""))
             setSingleLine()
             setTextColor(Ui.TEXT)
             background = Ui.shape(context, Ui.SIDE, 22, Ui.LINE)
@@ -59,6 +61,8 @@ class ClientActivity : Activity() {
         web = WebView(this)
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
+        web.settings.allowFileAccess = false
+        web.settings.allowContentAccess = true
         web.webViewClient = object : WebViewClient() {
             override fun onReceivedError(v: WebView, r: WebResourceRequest, e: WebResourceError) {
                 if (r.isForMainFrame)
@@ -94,28 +98,53 @@ class ClientActivity : Activity() {
             Toast.makeText(this, "Baixando $name (pasta Downloads)", Toast.LENGTH_SHORT).show()
         }
 
+        val find = Ui.secondary(this, "Encontrar servidores no Wi-Fi") {
+            val peers = discovery?.peers().orEmpty()
+            if (peers.isEmpty()) Toast.makeText(this, "Procurando… Confira se o servidor está ligado. Você pode digitar o IP acima.", Toast.LENGTH_LONG).show()
+            else AlertDialog.Builder(this).setTitle("Escolha o servidor principal")
+                .setItems(peers.map { it.name }.toTypedArray()) { _, which ->
+                    val peer = peers[which]; addr.setText("http://${peer.host}:${peer.port}"); connect()
+                }.setNegativeButton("Cancelar", null).show()
+        }
         col.addView(bar)
+        col.addView(find, LinearLayout.LayoutParams(-1, dp(44)))
         col.addView(web, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(col)
 
         if (addr.text.isNotBlank()) connect()
     }
 
+    override fun onResume() {
+        super.onResume()
+        discovery = Discovery(this).also { it.start() }
+    }
+    override fun onPause() { discovery?.stop(); discovery = null; super.onPause() }
+    override fun onDestroy() {
+        chooserCb?.onReceiveValue(null); chooserCb = null
+        web.destroy(); super.onDestroy()
+    }
     private fun connect() {
-        var u = addr.text.toString().trim()
-        if (u.isEmpty()) return
-        if (!u.startsWith("http://") && !u.startsWith("https://")) u = "http://$u"
-        val host = u.substringAfter("://")
-        if (!host.contains(":")) u = u.trimEnd('/') + ":" + Cfg.PORT
-        getSharedPreferences("cfg", 0).edit().putString("client_url", addr.text.toString().trim()).apply()
-        web.loadUrl(u)
+        try {
+            var value = addr.text.toString().trim()
+            if (value.isEmpty()) return
+            if (!value.contains("://")) value = "http://$value"
+            val parsed = java.net.URI(value)
+            require(parsed.scheme in listOf("http", "https") && parsed.host != null && parsed.userInfo == null)
+            val uri = java.net.URI(parsed.scheme, null, parsed.host, if (parsed.port < 0) Cfg.PORT else parsed.port, "/", null, null)
+            val url = uri.toString()
+            if (parsed.host != "127.0.0.1") getSharedPreferences("cfg", 0).edit().putString("client_url", url).apply()
+            web.loadUrl(url)
+        } catch (_: Exception) { Toast.makeText(this, "Digite um endereço válido, como 192.168.1.10:8080", Toast.LENGTH_LONG).show() }
     }
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 30) {
-            chooserCb?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data))
+            val selected = if (resultCode != RESULT_OK || data == null) null else data.clipData?.let { cd ->
+                Array(cd.itemCount) { cd.getItemAt(it).uri }
+            } ?: data.data?.let { arrayOf(it) }
+            chooserCb?.onReceiveValue(selected)
             chooserCb = null
         }
     }
