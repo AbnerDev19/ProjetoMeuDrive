@@ -20,7 +20,10 @@ jobs:
           packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
           log-accepted-android-sdk-licenses: false
       - uses: gradle/actions/setup-gradle@v4
+      - run: python3 -m pip install -r scripts/requirements-pc.txt
       - run: python3 scripts/test-pc-server.py
+      - run: python3 scripts/test-remote-access.py
+      - run: python3 scripts/test-dedicate-device.py
       - run: ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:

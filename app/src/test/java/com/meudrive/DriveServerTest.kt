@@ -56,6 +56,12 @@ class DriveServerTest {
         assertArrayEquals(data.copyOfRange(299999,300011),part.bytes)
         assertEquals(416,call("/api/download?path=Transferencias/video.mp4",range="bytes=600000-").code)
     }
+    @Test fun previewRequiresAuthenticationAndRejectsEscapes() {
+        assertEquals(401,call("/api/preview?path=photo.jpg",auth=false).code)
+        assertEquals(400,call("/api/preview?path="+URLEncoder.encode("../outside.jpg", "UTF-8")).code)
+        assertEquals(400,call("/api/preview?path=missing.jpg").code)
+        assertEquals(405,call("/api/preview?path=photo.jpg", "POST", byteArrayOf()).code)
+    }
     @Test fun protectsAuthPathsMethodsAndCrossOriginWrites() {
         assertEquals(401,call("/api/list",auth=false).code)
         assertEquals(405,call("/api/delete?path=Transferencias").code)

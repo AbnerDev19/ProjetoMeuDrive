@@ -7,3 +7,5 @@ local.properties
 __pycache__/
 *.pyc
 MeuDrive-PC.zip
+dedicated-plan.json
+dedicated-state.json

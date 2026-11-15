@@ -41,6 +41,7 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
     private data class Token(val expires: Long, val key: String)
     private val tokens = ConcurrentHashMap<String, Token>()
     private val attempts = ConcurrentHashMap<String, Pair<Long, Int>>()
+    private val previews = ImagePreview(ctx)
     private val root: File get() = Cfg.rootDir(ctx)
     private val transfers = TransferStore(File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, ".transfers"), ::resolve)
 
@@ -52,7 +53,7 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
         // Rejected bodies may remain unread; never reuse their HTTP connection.
         if (r.status.requestStatus >= 400) r.closeConnection(true)
         r.addHeader("X-Content-Type-Options", "nosniff")
-        r.addHeader("Cache-Control", "no-store")
+        r.addHeader("Cache-Control", if (s.uri == "/api/preview" && r.status.requestStatus in setOf(200, 304)) "private, max-age=60" else "no-store")
         r.addHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'")
         return r
     }
@@ -68,7 +69,7 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
             return error(Response.Status.FORBIDDEN, "Origem inválida")
         if (s.uri == "/api/login" && s.method == Method.POST) return login(s)
         if (!authed(s)) return error(Response.Status.UNAUTHORIZED, "Entre com a senha da casa")
-        val read = setOf("/api/list", "/api/download", "/api/whoami", "/api/inbox", "/api/transfer/status", "/api/peers")
+        val read = setOf("/api/list", "/api/download", "/api/preview", "/api/whoami", "/api/inbox", "/api/transfer/status", "/api/peers")
         val expected = if (s.uri == "/api/transfer/chunk") Method.PUT else if (s.uri in read) Method.GET else Method.POST
         if (s.method != expected) return error(Response.Status.METHOD_NOT_ALLOWED, "Método inválido")
         if (s.uri == "/api/transfer/chunk") {
@@ -87,6 +88,7 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
             }))
             "/api/list" -> list(rel)
             "/api/download" -> download(rel, s)
+            "/api/preview" -> preview(rel, s)
             "/api/transfer/start" -> stateJson(transfers.start(rel, s.parms["name"].orEmpty(), s.parms["size"]?.toLongOrNull() ?: -1, s.parms["from"] ?: "Navegador"))
             "/api/transfer/status" -> stateJson(transfers.state(s.parms["id"].orEmpty()))
             "/api/mkdir" -> {
@@ -139,7 +141,7 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
         if (tokens.size >= 128) tokens.clear()
         val token = ByteArray(32).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
         tokens[token] = Token(now + 86400000, stored)
-        return ok().apply { addHeader("Set-Cookie", "sid=$token; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400") }
+        return ok().apply { addHeader("Set-Cookie", "sid=$token; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400" + if (s.headers["x-forwarded-proto"] == "https") "; Secure" else "") }
     }
     private fun authed(s: IHTTPSession): Boolean {
         val stored = ctx.getSharedPreferences("cfg", 0).getString("pwhash", null) ?: return false
@@ -182,6 +184,17 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
             addHeader("Accept-Ranges", "bytes"); addHeader("ETag", etag)
             if (range != null) addHeader("Content-Range", "bytes ${range.start}-${range.end}/$size")
             addHeader("Content-Disposition", "attachment; filename*=UTF-8''${URLEncoder.encode(f.name, "UTF-8").replace("+", "%20")}")
+        }
+    }
+    private fun preview(rel: String, s: IHTTPSession): Response {
+        val file = resolve(rel) ?: return bad()
+        val result = previews.make(file, s.parms["size"]?.toIntOrNull(), s.parms["full"] == "1")
+        if (s.headers["if-none-match"] == result.etag)
+            return newFixedLengthResponse(Response.Status.NOT_MODIFIED, "image/jpeg", "").apply { addHeader("ETag", result.etag) }
+        return newFixedLengthResponse(Response.Status.OK, "image/jpeg", result.bytes.inputStream(), result.bytes.size.toLong()).apply {
+            addHeader("ETag", result.etag)
+            addHeader("Content-Disposition", "inline")
+            addHeader("Vary", "Cookie, X-Key")
         }
     }
     private fun stateJson(t: TransferStore.State): Response {

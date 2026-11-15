@@ -58,6 +58,48 @@ class ServerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as other:
             link=self.drive.root/'outside';link.symlink_to(other,target_is_directory=True)
             with self.assertRaises(ValueError): self.drive.resolve('outside')
+    def test_photo_preview_is_authenticated_resized_oriented_and_cacheable(self):
+        from PIL import Image
+        image = Image.new('RGB', (1600, 800), 'blue')
+        exif = Image.Exif(); exif[274] = 6
+        photo = self.drive.root / 'rotated.jpg'
+        image.save(photo, exif=exif)
+        self.assertEqual(self.call('/api/preview?path=rotated.jpg', auth=False)[0], 401)
+        code, data, headers = self.call('/api/preview?path=rotated.jpg&size=160')
+        self.assertEqual(code, 200)
+        self.assertEqual(headers['Content-Type'], 'image/jpeg')
+        self.assertEqual(headers['Content-Disposition'], 'inline')
+        self.assertEqual(headers['Cache-Control'], 'private, max-age=60')
+        with Image.open(io.BytesIO(data)) as preview:
+            self.assertEqual(preview.size, (80, 160))
+        code, empty, _ = self.call('/api/preview?path=rotated.jpg&size=160', headers={'If-None-Match': headers['ETag']})
+        self.assertEqual(code, 304); self.assertEqual(empty, b'')
+        code, full, _ = self.call('/api/preview?path=rotated.jpg&size=999999&full=1')
+        self.assertEqual(code, 200)
+        with Image.open(io.BytesIO(full)) as preview:
+            self.assertLessEqual(max(preview.size), 1280)
+        self.assertTrue((self.drive.stage / 'previews').is_dir())
+        self.assertEqual(self.call('/api/preview?path=../outside.jpg')[0], 400)
+
+    def test_preview_rejects_active_and_corrupt_files_and_preserves_alpha(self):
+        from PIL import Image
+        (self.drive.root / 'active.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')
+        (self.drive.root / 'bad.jpg').write_bytes(b'not an image')
+        for name in ('active.svg', 'bad.jpg'):
+            code, raw, headers = self.call('/api/preview?path=' + name)
+            self.assertEqual(code, 400)
+            self.assertEqual(headers['Content-Type'], 'application/json; charset=utf-8')
+        Image.new('RGBA', (80, 40), (0, 0, 0, 0)).save(self.drive.root / 'alpha.png')
+        code, data, _ = self.call('/api/preview?path=alpha.png&size=64')
+        self.assertEqual(code, 200)
+        with Image.open(io.BytesIO(data)) as preview:
+            self.assertEqual(preview.size, (64, 32))
+            self.assertEqual(preview.getpixel((0, 0)), (255, 255, 255))
+        first = self.call('/api/preview?path=alpha.png')[2]['ETag']
+        Image.new('RGBA', (81, 40), (255, 0, 0, 255)).save(self.drive.root / 'alpha.png')
+        second = self.call('/api/preview?path=alpha.png')[2]['ETag']
+        self.assertNotEqual(first, second)
+
     def test_login_cookie_and_logout(self):
         code,_,h=self.call('/api/login','POST',b'password=password',auth=False)
         self.assertEqual(code,200);cookie=h['Set-Cookie'].split(';')[0]

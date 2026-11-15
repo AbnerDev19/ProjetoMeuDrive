@@ -7,7 +7,7 @@ root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--output', default=str(root / 'MeuDrive-PC.zip'))
 args = parser.parse_args()
-files = [root / p for p in ('scripts/pc-server.py', 'scripts/requirements-pc.txt', 'README.md')]
+files = [root / p for p in ('scripts/pc-server.py', 'scripts/requirements-pc.txt', 'scripts/remote-access.py', 'scripts/dedicate-device.py', 'scripts/install-all.ps1', 'scripts/install-all.sh', 'README.md', 'docs/ACESSO-REMOTO.md', 'docs/SERVIDOR-DEDICADO.md')]
 files += [p for p in (root / 'app/src/main/assets').rglob('*') if p.is_file()]
 with ZipFile(args.output, 'w', ZIP_DEFLATED) as archive:
     for file in files:
