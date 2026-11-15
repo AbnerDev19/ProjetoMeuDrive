@@ -50,6 +50,10 @@
             </intent-filter>
         </activity>
 
+        <service android:name=".TransferService" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Envio explícito de arquivos pessoais na rede, inclusive com tela apagada" />
+        </service>
+
         <service
             android:name=".ServerService"
             android:exported="false"

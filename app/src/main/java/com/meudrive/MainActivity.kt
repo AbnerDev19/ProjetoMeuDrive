@@ -63,7 +63,7 @@ class MainActivity : Activity() {
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         listOf("↑  Enviar" to { pickFiles() }, "☁  Arquivos" to { openCloud() }, "↙  Recebidos" to {
             startActivity(Intent(this, InboxActivity::class.java))
-        }).forEach { (label, action) -> actions.addView(Ui.secondary(this, label, action), LinearLayout.LayoutParams(0, Ui.dp(this, 54), 1f).apply { setMargins(0, Ui.dp(this@MainActivity, 8), Ui.dp(this@MainActivity, 6), Ui.dp(this@MainActivity, 20)) }) }
+        }).forEach { (label, action) -> actions.addView(Ui.secondary(this, label, action), LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(0, Ui.dp(this@MainActivity, 8), Ui.dp(this@MainActivity, 6), Ui.dp(this@MainActivity, 20)) }) }
         content.addView(actions)
         val primary = Ui.card(this)
         val localPrimary = prefs.getBoolean("primary_server", false)
@@ -102,7 +102,7 @@ class MainActivity : Activity() {
         shell.addView(ScrollView(this).apply { isFillViewport = true; addView(content) }, LinearLayout.LayoutParams(-1, 0, 1f))
         val nav = LinearLayout(this).apply { setBackgroundColor(Ui.BG); setPadding(Ui.dp(context, 8), Ui.dp(context, 4), Ui.dp(context, 8), Ui.dp(context, 8)) }
         listOf("Início" to { render() }, "Arquivos" to { openCloud() }, "Recebidos" to { startActivity(Intent(this, InboxActivity::class.java)) }, "Servidor" to { settings() }).forEach { (label, action) ->
-            nav.addView(Ui.secondary(this, label, action).apply { textSize = 11f; setPadding(0, 0, 0, 0) }, LinearLayout.LayoutParams(0, Ui.dp(this, 48), 1f))
+            nav.addView(Ui.secondary(this, label, action).apply { textSize = 11f; setPadding(0, 0, 0, 0) }, LinearLayout.LayoutParams(0, -2, 1f))
         }
         shell.addView(nav); setContentView(shell)
     }

@@ -8,9 +8,12 @@ permissions:
   contents: read
 jobs:
   verify-and-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -20,10 +23,15 @@ jobs:
           packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
           log-accepted-android-sdk-licenses: false
       - uses: gradle/actions/setup-gradle@v4
-      - run: python3 -m pip install -r scripts/requirements-pc.txt
+      - run: python3 -m pip install -r scripts/requirements-pc.txt playwright
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: python3 -m playwright install --with-deps chromium
       - run: python3 scripts/test-pc-server.py
+      - run: python3 scripts/test-peer-ops.py
       - run: python3 scripts/test-remote-access.py
       - run: python3 scripts/test-dedicate-device.py
+      - run: python3 scripts/test-ui.py
+      - run: python3 scripts/test-media-ui.py
       - run: ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
@@ -42,5 +50,6 @@ jobs:
         with:
           name: Android-reports
           path: |
+            build/ui-previews/
             app/build/reports/tests/
             app/build/reports/lint-results-debug.html

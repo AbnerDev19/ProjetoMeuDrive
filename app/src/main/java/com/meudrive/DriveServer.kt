@@ -41,24 +41,31 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
     private data class Token(val expires: Long, val key: String)
     private val tokens = ConcurrentHashMap<String, Token>()
     private val attempts = ConcurrentHashMap<String, Pair<Long, Int>>()
+    private val registry = PeerRegistry()
+    private val operations = PeerOperations(::resolve, peers,
+        { ctx.getSharedPreferences("cfg", 0).getString("pwhash", null) }, { Cfg.deviceName(ctx) })
+    override fun stop() { operations.close(); super.stop() }
     private val previews = ImagePreview(ctx)
     private val root: File get() = Cfg.rootDir(ctx)
+    private val media = MediaIndex({ root }, ::resolve)
     private val transfers = TransferStore(File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, ".transfers"), ::resolve)
 
     override fun serve(s: IHTTPSession): Response {
         val r = try { route(s) }
+        catch (e: org.json.JSONException) { error(Response.Status.BAD_REQUEST, "Seleção inválida") }
         catch (e: IllegalArgumentException) { error(Response.Status.BAD_REQUEST, e.message ?: "Dados inválidos") }
         catch (e: IllegalStateException) { error(Response.Status.CONFLICT, e.message ?: "Tente novamente") }
         catch (_: Exception) { error(Response.Status.INTERNAL_ERROR, "Falha ao acessar armazenamento ou conexão interrompida") }
         // Rejected bodies may remain unread; never reuse their HTTP connection.
         if (r.status.requestStatus >= 400) r.closeConnection(true)
         r.addHeader("X-Content-Type-Options", "nosniff")
-        r.addHeader("Cache-Control", if (s.uri == "/api/preview" && r.status.requestStatus in setOf(200, 304)) "private, max-age=60" else "no-store")
-        r.addHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'")
+        r.addHeader("Cache-Control", if (s.uri.startsWith("/pdfjs/") && r.status.requestStatus == 200) "public, max-age=86400" else if (s.uri == "/api/preview" && r.status.requestStatus in setOf(200, 304)) "private, max-age=60" else "no-store")
+        r.addHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; frame-src 'self'; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-ancestors ${if (s.uri == "/pdf-viewer.html") "'self'" else "'none'"}")
         return r
     }
 
     private fun route(s: IHTTPSession): Response {
+        if (s.method == Method.GET) ViewerAssets.serve(ctx, s.uri)?.let { return it }
         if (s.uri == "/" && s.method == Method.GET)
             return newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", ctx.assets.open("index.html").bufferedReader().use { it.readText() })
         if (s.uri == "/fonts/jakarta.ttf" && s.method == Method.GET)
@@ -69,9 +76,9 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
             return error(Response.Status.FORBIDDEN, "Origem inválida")
         if (s.uri == "/api/login" && s.method == Method.POST) return login(s)
         if (!authed(s)) return error(Response.Status.UNAUTHORIZED, "Entre com a senha da casa")
-        val read = setOf("/api/list", "/api/download", "/api/preview", "/api/whoami", "/api/inbox", "/api/transfer/status", "/api/peers")
+        val read = setOf("/api/list", "/api/media", "/api/open", "/api/download", "/api/preview", "/api/whoami", "/api/inbox", "/api/transfer/status", "/api/peers", "/api/peer-send/status")
         val expected = if (s.uri == "/api/transfer/chunk") Method.PUT else if (s.uri in read) Method.GET else Method.POST
-        if (s.method != expected) return error(Response.Status.METHOD_NOT_ALLOWED, "Método inválido")
+        if (s.method != expected && !(s.method == Method.HEAD && s.uri in setOf("/api/download", "/api/open"))) return error(Response.Status.METHOD_NOT_ALLOWED, "Método inválido")
         if (s.uri == "/api/transfer/chunk") {
             val length = s.headers["content-length"]?.toLongOrNull() ?: return bad("Content-Length obrigatório")
             return stateJson(transfers.append(s.parms["id"].orEmpty(), s.parms["offset"]?.toLongOrNull() ?: -1, length, s.inputStream))
@@ -83,10 +90,14 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
         }
         val rel = s.parms["path"].orEmpty()
         return when (s.uri) {
-            "/api/peers" -> json(Response.Status.OK, JSONObject().put("items", JSONArray().apply {
-                peers().forEach { put(JSONObject().put("name", it.name).put("host", it.host).put("port", it.port)) }
-            }))
+            "/api/peers" -> json(Response.Status.OK, JSONObject().put("items", registry.list(peers())))
+            "/api/heartbeat" -> json(Response.Status.OK, registry.heartbeat(s.parms["deviceId"].orEmpty(), s.parms["name"].orEmpty()))
+            "/api/delete-batch" -> json(Response.Status.OK, operations.deleteBatch(operations.selected(s.parms["paths"].orEmpty())))
+            "/api/peer-send" -> json(Response.Status.OK, operations.send(s.parms["target"].orEmpty(), operations.selected(s.parms["paths"].orEmpty())))
+            "/api/peer-send/status" -> json(Response.Status.OK, operations.status(s.parms["id"].orEmpty()))
             "/api/list" -> list(rel)
+            "/api/media" -> media(s)
+            "/api/open" -> download(rel, s, true)
             "/api/download" -> download(rel, s)
             "/api/preview" -> preview(rel, s)
             "/api/transfer/start" -> stateJson(transfers.start(rel, s.parms["name"].orEmpty(), s.parms["size"]?.toLongOrNull() ?: -1, s.parms["from"] ?: "Navegador"))
@@ -151,13 +162,7 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
             it.trim().startsWith("sid=") && token != null && token.expires > System.currentTimeMillis() && token.key == stored
         }
     }
-    private fun resolve(rel: String): File? {
-        val base = root.canonicalFile
-        val file = File(base, rel).canonicalFile
-        if (file != base && !file.path.startsWith(base.path + File.separator)) return null
-        if (file.path.split(File.separatorChar).any { it == "Android" || it == ".transfers" }) return null
-        return file
-    }
+    private fun resolve(rel: String): File? = StorageBoundary.resolve(root, rel)
     private fun list(rel: String): Response {
         val dir = resolve(rel) ?: return bad()
         require(dir.isDirectory) { "Não é uma pasta" }
@@ -168,9 +173,11 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
             }
         return json(Response.Status.OK, JSONObject().put("path", rel).put("items", arr))
     }
-    private fun download(rel: String, s: IHTTPSession): Response {
+    private fun download(rel: String, s: IHTTPSession, inline: Boolean = false): Response {
         val f = resolve(rel) ?: return bad()
         if (!f.isFile) return error(Response.Status.NOT_FOUND, "Arquivo não encontrado")
+        val mime = if (inline) MediaIndex.mime(f) ?: return bad("Formato sem visualizador seguro; baixe o original")
+            else URLConnection.guessContentTypeFromName(f.name) ?: "application/octet-stream"
         val size = f.length()
         val etag = "\"${size.toString(16)}-${f.lastModified().toString(16)}\""
         val rangeHeader = s.headers["range"]?.takeIf { s.headers["if-range"] == null || s.headers["if-range"] == etag }
@@ -180,12 +187,22 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
         try { if (range != null) input.channel.position(range.start) } catch (e: Exception) { input.close(); throw e }
         val count = if (range == null) size else range.end - range.start + 1
         return newFixedLengthResponse(if (range == null) Response.Status.OK else Response.Status.PARTIAL_CONTENT,
-            URLConnection.guessContentTypeFromName(f.name) ?: "application/octet-stream", input, count).apply {
+            mime, input, count).apply {
             addHeader("Accept-Ranges", "bytes"); addHeader("ETag", etag)
             if (range != null) addHeader("Content-Range", "bytes ${range.start}-${range.end}/$size")
-            addHeader("Content-Disposition", "attachment; filename*=UTF-8''${URLEncoder.encode(f.name, "UTF-8").replace("+", "%20")}")
+            addHeader("Content-Disposition", "${if (inline) "inline" else "attachment"}; filename*=UTF-8''${URLEncoder.encode(f.name, "UTF-8").replace("+", "%20")}")
         }
     }
+    private fun media(s: IHTTPSession): Response {
+        val page = media.page(s.parms["kind"] ?: "all", s.parms["offset"]?.toIntOrNull() ?: 0,
+            s.parms["limit"]?.toIntOrNull() ?: 60, s.parms["refresh"] == "1")
+        val items = JSONArray()
+        page.items.forEach { items.put(JSONObject().put("name", it.name).put("path", it.path).put("kind", it.kind)
+            .put("size", it.size).put("mtime", it.mtime).put("dir", false)) }
+        return json(Response.Status.OK, JSONObject().put("items", items).put("total", page.total)
+            .put("nextOffset", page.nextOffset ?: JSONObject.NULL).put("partial", page.partial).put("scannedAt", page.scannedAt))
+    }
+
     private fun preview(rel: String, s: IHTTPSession): Response {
         val file = resolve(rel) ?: return bad()
         val result = previews.make(file, s.parms["size"]?.toIntOrNull(), s.parms["full"] == "1")

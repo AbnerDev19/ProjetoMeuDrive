@@ -40,10 +40,15 @@ object Ui {
         isAllCaps = false
         typeface = font(c)
         minHeight = dp(c, 48)
+        minimumWidth = 0
+        minWidth = 0
+        maxLines = 3
+        textSize = 13f
+        gravity = android.view.Gravity.CENTER
         setTextColor(Color.WHITE)
         stateListAnimator = null
         background = shape(c, ACCENT, 12)
-        setPadding(dp(c, 20), 0, dp(c, 20), 0)
+        setPadding(dp(c, 12), dp(c, 8), dp(c, 12), dp(c, 8))
         setOnClickListener { onClick() }
     }
 
@@ -52,10 +57,15 @@ object Ui {
         isAllCaps = false
         typeface = font(c)
         minHeight = dp(c, 48)
+        minimumWidth = 0
+        minWidth = 0
+        maxLines = 3
+        textSize = 13f
+        gravity = android.view.Gravity.CENTER
         setTextColor(ACCENT)
         stateListAnimator = null
         background = shape(c, Color.parseColor("#EFF4FF"), 12)
-        setPadding(dp(c, 20), 0, dp(c, 20), 0)
+        setPadding(dp(c, 12), dp(c, 8), dp(c, 12), dp(c, 8))
         setOnClickListener { onClick() }
     }
 

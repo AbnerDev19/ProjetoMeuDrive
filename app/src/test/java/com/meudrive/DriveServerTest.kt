@@ -30,7 +30,7 @@ class DriveServerTest {
     private data class Reply(val code: Int, val bytes: ByteArray, val range: String?) { fun json(): JSONObject { assertEquals(String(bytes), 200, code); return JSONObject(String(bytes)) } }
     private fun call(path: String, method: String = "GET", body: ByteArray? = null, auth: Boolean = true, range: String? = null, origin: String? = null): Reply {
         val c = URL("http://127.0.0.1:${Cfg.PORT}$path").openConnection(java.net.Proxy.NO_PROXY) as HttpURLConnection
-        c.connectTimeout=3000;c.readTimeout=5000;c.requestMethod=method
+        c.connectTimeout=3000;c.readTimeout=5000;c.requestMethod=method;c.setRequestProperty("Connection","close")
         if(auth)c.setRequestProperty("X-Key",key)
         if(range!=null)c.setRequestProperty("Range",range)
         if(origin!=null)c.setRequestProperty("Origin",origin)
@@ -55,6 +55,25 @@ class DriveServerTest {
         assertEquals(206,part.code);assertEquals("bytes 299999-300010/600000",part.range)
         assertArrayEquals(data.copyOfRange(299999,300011),part.bytes)
         assertEquals(416,call("/api/download?path=Transferencias/video.mp4",range="bytes=600000-").code)
+    }
+    @Test fun galleryAndSafeInlineStreamsAreAuthenticatedAndSupportRangesAndHead() {
+        val root=File(temp.root,"MeuDrive")
+        File(root,"DCIM").mkdirs()
+        val bytes=ByteArray(100) { it.toByte() }
+        File(root,"DCIM/movie.mp4").writeBytes(bytes)
+        File(root,"paper.pdf").writeText("%PDF-test")
+        File(root,"active.svg").writeText("<svg/>")
+        assertEquals(401,call("/api/media",auth=false).code)
+        val page=call("/api/media?kind=all&limit=1").json()
+        assertEquals(2,page.getInt("total"));assertEquals(1,page.getInt("nextOffset"))
+        assertEquals("DCIM/movie.mp4",call("/api/media?kind=video").json().getJSONArray("items").getJSONObject(0).getString("path"))
+        assertEquals(400,call("/api/media?kind=html").code)
+        assertEquals(401,call("/api/open?path=paper.pdf",auth=false).code)
+        assertEquals(400,call("/api/open?path=active.svg").code)
+        val range=call("/api/open?path=DCIM/movie.mp4",range="bytes=10-19")
+        assertEquals(206,range.code);assertArrayEquals(bytes.copyOfRange(10,20),range.bytes)
+        val head=call("/api/open?path=paper.pdf",method="HEAD")
+        assertEquals(200,head.code);assertEquals(0,head.bytes.size)
     }
     @Test fun previewRequiresAuthenticationAndRejectsEscapes() {
         assertEquals(401,call("/api/preview?path=photo.jpg",auth=false).code)
