@@ -25,6 +25,7 @@ import kotlin.concurrent.thread
  * próprio app) e deixa escolher o destino: este celular ou outro aparelho achado na rede.
  */
 class ShareActivity : Activity() {
+    private data class Target(val name: String, val address: ServerAddress)
 
     private lateinit var tvTitle: TextView
     private lateinit var tvInfo: TextView
@@ -96,14 +97,21 @@ class ShareActivity : Activity() {
             Ui.primary(this, "Este celular (para pegar no computador)") { sendLocal() },
             Ui.lp(this, 6, -1)
         )
-        val discovered = discovery?.peers().orEmpty()
-        val primary = getSharedPreferences("cfg", 0).getString("client_url", null)?.let { value ->
-            try { val u = java.net.URI(value); Peer("Servidor principal salvo", u.host, if (u.port < 0) Cfg.PORT else u.port) }
-            catch (_: Exception) { null }
+        val discovered = discovery?.peers().orEmpty().mapNotNull { p ->
+            runCatching { Target(p.name, ServerAddress.parse("http://${p.host}:${p.port}")) }.getOrNull()
         }
-        val ps = (listOfNotNull(primary) + discovered).distinctBy { "${it.host}:${it.port}" }
+        val prefs = getSharedPreferences("cfg", 0)
+        val saved = listOf("lan_url" to "Servidor pelo Wi-Fi", "remote_url" to "Servidor fora de casa", "client_url" to "Último servidor")
+            .mapNotNull { (key, label) -> prefs.getString(key, null)?.let { value ->
+                runCatching { Target(label, ServerAddress.parse(value)) }.getOrNull()
+            } }
+        val ps = (saved + discovered).distinctBy { it.address.origin }
         ps.forEach { p ->
-            targets.addView(Ui.secondary(this, p.name) { sendPeer(p) }, Ui.lp(this, 8, -1))
+            targets.addView(Ui.secondary(this, "${p.name}\n${p.address.origin}") {
+                android.app.AlertDialog.Builder(this).setTitle("Confirmar destino")
+                    .setMessage("Enviar para este servidor?\n\n${p.address.origin}\n\nContinue somente se o endereço pertence a você. A chave da casa será enviada para ele.")
+                    .setPositiveButton("Enviar") { _, _ -> sendPeer(p) }.setNegativeButton("Cancelar", null).show()
+            }, Ui.lp(this, 8, -1))
         }
         if (ps.isEmpty()) {
             targets.addView(
@@ -230,7 +238,7 @@ class ShareActivity : Activity() {
 
     // ---------- enviar para outro aparelho ----------
 
-    private fun sendPeer(p: Peer) {
+    private fun sendPeer(p: Target) {
         val key = getSharedPreferences("cfg", 0).getString("pwhash", null)
         if (key == null) {
             Toast.makeText(this, "Defina a senha na tela Servidor (a mesma em todos os aparelhos)", Toast.LENGTH_LONG).show()
@@ -281,14 +289,15 @@ class ShareActivity : Activity() {
         if (code == 401) "A senha é diferente nesse aparelho. Use a mesma senha em todos."
         else "O outro aparelho respondeu com erro $code."
 
-    private fun base(p: Peer) = "http://" + p.host + ":" + p.port
+    private fun base(p: Target) = p.address.origin
 
-    private fun postText(p: Peer, key: String, t: String): Int {
+    private fun postText(p: Target, key: String, t: String): Int {
         val body = ("text=" + URLEncoder.encode(t, "UTF-8") +
             "&from=" + URLEncoder.encode(Cfg.deviceName(this), "UTF-8")).toByteArray()
         val c = URL(base(p) + "/api/send-text").openConnection() as HttpURLConnection
         try {
             c.requestMethod = "POST"
+            c.instanceFollowRedirects = false
             c.doOutput = true
             c.connectTimeout = 5000
             c.readTimeout = 15000
@@ -302,7 +311,7 @@ class ShareActivity : Activity() {
         }
     }
 
-    private fun postFile(p: Peer, key: String, uri: Uri, name: String, size: Long): Int {
+    private fun postFile(p: Target, key: String, uri: Uri, name: String, size: Long): Int {
         val started = System.nanoTime()
         var last = 0L
         TransferClient(this).send(base(p), key, uri, name, size) { sent, total ->
@@ -323,6 +332,8 @@ class ShareActivity : Activity() {
 
     private fun showResult(ok: Int, fail: Int, error: String?, local: Boolean, peer: String?) {
         busy = false
+        action.text = "Fechar"
+        action.setOnClickListener { finish() }
         bar.progress = 100
         tvTitle.text = if (fail == 0) "Pronto!" else "Concluído com falhas"
         val sb = StringBuilder()

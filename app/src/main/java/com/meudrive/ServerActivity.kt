@@ -150,6 +150,9 @@ class ServerActivity : Activity() {
                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
             )
         }, Ui.lp(ctx))
+        c3.addView(Ui.primary(ctx, "Abrir modo dedicado e reduzir distrações") {
+            startActivity(Intent(ctx, DedicatedActivity::class.java))
+        }, Ui.lp(ctx, 10, -1))
         root.addView(c3)
 
         val c4 = Ui.card(ctx)
@@ -160,6 +163,9 @@ class ServerActivity : Activity() {
                 "e use o endereço 100.x.x.x:8080. Não abra a porta 8080 no roteador.",
             14f, Ui.MUTED
         ))
+        c4.addView(Ui.primary(ctx, "Configurar VPN ou link HTTPS") {
+            startActivity(Intent(ctx, RemoteAccessActivity::class.java))
+        }, Ui.lp(ctx, 8, -1))
         root.addView(c4)
 
         setContentView(ScrollView(ctx).apply { setBackgroundColor(Ui.SIDE); addView(root) })

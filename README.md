@@ -2,6 +2,15 @@
 
 Sua nuvem pessoal na rede de casa: um Galaxy A06 guarda os arquivos; PCs e outros celulares enviam e baixam pela rede local. Android 11 ou superior, sem root. Interface inspirada no design CloudVault fornecido, com fonte Plus Jakarta Sans incluída no APK e funcionamento sem CDNs ou internet.
 
+## Novidades da versão 1.2
+
+- Fotos agora têm miniaturas autenticadas e visualizador com correção de orientação, cache e tratamento de formatos não suportados.
+- Envio mostra o destino e a fila; pausa/retomada e tentativa apenas dos pendentes evitam duplicar o que já concluiu. Há recuperação de conexão e navegação entre pastas.
+- A06 tem **Modo dedicado** com Não perturbe reversível, fixação confirmada pelo Android e condições de bateria/rede/temperatura. Um utilitário USB opcional permite suspender uma seleção revisada de apps de terceiros e restaurar depois. O APK não desativa outros apps sem privilégios.
+- Acesso externo tem tela própria, endereços Wi-Fi/remoto separados e suporte correto a HTTPS. Escolha VPN privada Tailscale (A06 sem PC intermediário) ou link HTTPS temporário Cloudflare Quick Tunnel (PC ligado em casa, sem conta/domínio).
+
+Guias completos: [Servidor dedicado e suspensão opcional por USB](docs/SERVIDOR-DEDICADO.md) e [Acesso remoto gratuito e site de upload](docs/ACESSO-REMOTO.md).
+
 ## Instalar
 
 Compile com Android Studio ou baixe o artefato **MeuDrive-APK** na aba **Actions → Android APK → execução concluída**. Extraia o ZIP e abra o APK em cada celular. O Android pedirá autorização para instalar a partir do navegador ou gerenciador de arquivos. A instalação exige confirmação em cada aparelho.
@@ -75,7 +84,13 @@ JDK 17, Android SDK 34 e Build-Tools 34.0.0:
 
 ```sh
 ./gradlew testDebugUnitTest lintDebug assembleDebug
+python3 -m pip install -r scripts/requirements-pc.txt
+python3 scripts/test-pc-server.py
+python3 scripts/test-remote-access.py
+python3 scripts/test-dedicate-device.py
 ```
+
+O teste web opcional `python3 scripts/test-ui.py` usa Playwright com Chromium instalado. Os testes não aplicam mudanças em celulares físicos.
 
 APK: `app/build/outputs/apk/debug/app-debug.apk`. O wrapper Gradle 8.7 está incluído. A integração contínua repete testes, lint e geração do APK.
 

@@ -11,8 +11,8 @@ android {
         applicationId = "com.meudrive"
         minSdk = 30
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -29,5 +29,6 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.mockito:mockito-core:4.11.0")
     testImplementation("org.json:json:20240303")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("org.nanohttpd:nanohttpd:2.3.1")
 }

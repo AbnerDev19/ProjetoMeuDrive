@@ -46,7 +46,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL; setPadding(Ui.dp(context, 16), Ui.dp(context, 14), Ui.dp(context, 16), Ui.dp(context, 24))
         }
         content.addView(Ui.text(this, "Tudo conectado, perto de você", 12f, Ui.MUTED))
-        content.addView(Ui.text(this, "Meu armazenamento", 26f, Ui.TEXT, true))
+        content.addView(Ui.text(this, if (prefs.getBoolean("primary_server", false)) "Painel do servidor" else "Sua nuvem pessoal", 26f, Ui.TEXT, true))
+        if (prefs.getBoolean("primary_server", false)) {
         val root = Cfg.rootDir(this)
         val storage = Ui.card(this).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = Ui.dp(context, 18) }
         storage.addView(Ui.text(this, "Neste aparelho • ${Cfg.deviceName(this)}", 12f, Ui.MUTED))
@@ -57,6 +58,7 @@ class MainActivity : Activity() {
         }, Ui.lp(this, 14, -1))
         storage.addView(Ui.text(this, "${format(root.usableSpace)} livres • ${if (ServerService.running) "Servidor ligado" else "Servidor desligado"}", 11f, Ui.MUTED))
         content.addView(storage)
+        }
         content.addView(Ui.text(this, "Ações rápidas", 18f, Ui.TEXT, true))
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         listOf("↑  Enviar" to { pickFiles() }, "☁  Arquivos" to { openCloud() }, "↙  Recebidos" to {
@@ -65,7 +67,9 @@ class MainActivity : Activity() {
         content.addView(actions)
         val primary = Ui.card(this)
         val localPrimary = prefs.getBoolean("primary_server", false)
-        val url = prefs.getString("client_url", "").orEmpty()
+        val mode = prefs.getString("active_server_mode", "lan")
+        val url = prefs.getString(if (mode == "remote") "remote_url" else "lan_url", null)
+            ?: prefs.getString("client_url", "").orEmpty()
         primary.addView(Ui.text(this, "Sua nuvem principal", 18f, Ui.TEXT, true))
         primary.addView(Ui.text(this, if (localPrimary) "Este celular é o servidor principal. Ligue o servidor para guardar e receber arquivos." else if (url.isNotEmpty()) "Servidor salvo: $url" else "Use o Galaxy A06 para guardar os arquivos da casa. Nos outros aparelhos, conecte-se a ele.", 13f, Ui.MUTED))
         primary.addView(Ui.primary(this, if (localPrimary) "Abrir arquivos deste servidor" else "Conectar ao servidor principal") {
@@ -73,6 +77,12 @@ class MainActivity : Activity() {
             else if (localPrimary) settings() else openCloud()
         }, Ui.lp(this, 12, -1))
         primary.addView(Ui.secondary(this, if (localPrimary) "Configurar servidor" else "Usar este celular como servidor") { settings() }, Ui.lp(this, 8, -1))
+        primary.addView(Ui.secondary(this, "Configurar acesso fora de casa") {
+            startActivity(Intent(this, RemoteAccessActivity::class.java))
+        }, Ui.lp(this, 8, -1))
+        if (localPrimary) primary.addView(Ui.secondary(this, "Abrir modo dedicado do A06") {
+            startActivity(Intent(this, DedicatedActivity::class.java))
+        }, Ui.lp(this, 8, -1))
         content.addView(primary)
         content.addView(Ui.text(this, "Aparelhos na rede", 18f, Ui.TEXT, true))
         network = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }

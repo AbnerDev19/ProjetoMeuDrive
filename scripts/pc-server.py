@@ -6,6 +6,8 @@ import hashlib
 import hmac
 import http.server
 import json
+import io
+import warnings
 import mimetypes
 import os
 from pathlib import Path
@@ -21,6 +23,8 @@ import uuid
 CHUNK = 8 * 1024 * 1024
 RESERVE = 128 * 1024 * 1024
 TTL = 24 * 60 * 60
+PREVIEW_CACHE = 24 * 1024 * 1024
+PREVIEW_FORMATS = {'JPEG', 'PNG', 'WEBP', 'GIF', 'BMP', 'AVIF', 'HEIF', 'HEIC'}
 ASSETS = Path(__file__).resolve().parents[1] / 'app/src/main/assets'
 
 
@@ -34,6 +38,8 @@ class Drive:
         self.stage = self.root / '.meudrive-transfers'
         self.stage.mkdir(exist_ok=True)
         (self.root / 'Transferencias').mkdir(exist_ok=True)
+        self.preview_slots = threading.BoundedSemaphore(2)
+        self.preview_lock = threading.Lock()
         self.lock = threading.RLock()
         self.tokens = {}
         self.attempts = {}
@@ -144,6 +150,76 @@ class Drive:
             self.save(meta)
         return self.state(meta)
 
+    def preview(self, file, requested=320, full=False):
+        try:
+            from PIL import Image, ImageOps, UnidentifiedImageError
+        except ImportError as error:
+            raise ValueError('Instale as dependências do servidor PC para ver fotos') from error
+        if not file.is_file():
+            raise ValueError('Foto não encontrada')
+        edge = 1280 if full else max(64, min(1280, requested))
+        st = file.stat()
+        key = hashlib.sha256(f'{file.resolve()}|{st.st_size}|{st.st_mtime_ns}|{edge}|v1'.encode()).hexdigest()
+        etag = f'"preview-{key}"'
+        cache = self.stage / 'previews'
+        cache.mkdir(exist_ok=True)
+        target = cache / (key + '.jpg')
+        try:
+            data = target.read_bytes()
+            target.touch()
+            return data, etag
+        except FileNotFoundError:
+            pass
+        if not self.preview_slots.acquire(blocking=False):
+            raise ValueError('Prévias ocupadas; tente novamente')
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('error', Image.DecompressionBombWarning)
+                with Image.open(file) as image:
+                    if image.format not in PREVIEW_FORMATS or image.width * image.height > 40_000_000:
+                        raise ValueError('Formato ou dimensões sem prévia; baixe o original')
+                    # JPEG draft decoding reduces memory before EXIF correction and scaling.
+                    image.draft('RGB', (edge * 2, edge * 2))
+                    oriented = ImageOps.exif_transpose(image)
+                    try:
+                        oriented.thumbnail((edge, edge), Image.Resampling.LANCZOS)
+                        if oriented.mode in ('RGBA', 'LA') or 'transparency' in oriented.info:
+                            rgba = oriented.convert('RGBA')
+                            rgb = Image.new('RGB', oriented.size, 'white')
+                            rgb.paste(rgba, mask=rgba.getchannel('A'))
+                            rgba.close()
+                        else:
+                            rgb = oriented.convert('RGB')
+                        try:
+                            output = io.BytesIO()
+                            rgb.save(output, format='JPEG', quality=82)
+                            data = output.getvalue()
+                        finally:
+                            rgb.close()
+                    finally:
+                        if oriented is not image:
+                            oriented.close()
+            with self.preview_lock:
+                temp = cache / (key + '-' + secrets.token_hex(8) + '.tmp')
+                try:
+                    temp.write_bytes(data)
+                    temp.replace(target)
+                finally:
+                    temp.unlink(missing_ok=True)
+                cached = sorted(cache.glob('*.jpg'), key=lambda p: p.stat().st_mtime)
+                total = sum(p.stat().st_size for p in cached)
+                for item in cached:
+                    if total <= PREVIEW_CACHE:
+                        break
+                    length = item.stat().st_size
+                    item.unlink()
+                    total -= length
+            return data, etag
+        except (UnidentifiedImageError, Image.DecompressionBombError, Image.DecompressionBombWarning, OSError) as error:
+            raise ValueError('Formato sem prévia; baixe o original para abrir') from error
+        finally:
+            self.preview_slots.release()
+
     def discover(self, port):
         try:
             from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser, ServiceListener
@@ -210,7 +286,7 @@ class Server(http.server.ThreadingHTTPServer):
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    server_version = 'MeuDrivePC/1.1'
+    server_version = 'MeuDrivePC/1.2'
     def setup(self):
         super().setup()
         self.connection.settimeout(120)
@@ -225,11 +301,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Type', mime)
         self.send_header('Content-Length', str(length))
         self.send_header('Connection', 'close')
-        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Cache-Control', (extra or {}).get('Cache-Control', 'no-store'))
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'")
         for k, v in (extra or {}).items():
-            self.send_header(k, v)
+            if k != 'Cache-Control': self.send_header(k, v)
         self.end_headers()
         self.close_connection = True
     def do_GET(self): self.handle_api()
@@ -275,16 +351,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 d.tokens = {k: v for k, v in d.tokens.items() if v > now}
                 if len(d.tokens) > 128: d.tokens.clear()
                 token = secrets.token_hex(32); d.tokens[token] = now+86400
-                return self.reply(200, {'ok': True}, extra={'Set-Cookie': f'sid={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400'})
+                return self.reply(200, {'ok': True}, extra={'Set-Cookie': f'sid={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400' + ('; Secure' if self.headers.get('X-Forwarded-Proto') == 'https' else '')})
         if not (hmac.compare_digest(self.headers.get('X-Key', ''), d.key) or d.tokens.get(cookie, 0) > time.time()):
             return self.reply(401, {'error': 'Entre com a senha da casa'})
-        reads = {'/api/list','/api/download','/api/whoami','/api/inbox','/api/peers','/api/transfer/status'}
+        reads = {'/api/list','/api/download','/api/preview','/api/whoami','/api/inbox','/api/peers','/api/transfer/status'}
         expected = 'PUT' if route == '/api/transfer/chunk' else 'GET' if route in reads else 'POST'
         if self.command != expected:
             return self.reply(405, {'error': 'Método inválido'})
         rel = params.get('path', '')
         if route == '/api/download':
             return self.download(d.resolve(rel))
+        if route == '/api/preview':
+            data, etag = d.preview(d.resolve(rel), int(params.get('size', '320')), params.get('full') == '1')
+            headers = {'ETag': etag, 'Content-Disposition': 'inline', 'Cache-Control': 'private, max-age=60', 'Vary': 'Cookie, X-Key'}
+            if self.headers.get('If-None-Match') == etag:
+                return self.reply(304, b'', 'image/jpeg', headers)
+            return self.reply(200, data, 'image/jpeg', headers)
         with d.lock:
             if route == '/api/list':
                 folder = d.resolve(rel)
