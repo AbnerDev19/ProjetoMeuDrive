@@ -37,7 +37,22 @@ Os scripts executam `adb install -r` somente nos aparelhos conectados e autoriza
 - **Ver arquivos de outro celular:** ligue o servidor também nele, permita acesso e abra **Minha rede** no navegador ou use a descoberta do app. Cada celular mantém seu armazenamento; escolha o A06 como destino para centralizar cópias.
 - **Enviar texto/link:** use Compartilhar no Android ou a tela Compartilhados do navegador.
 
-Os aparelhos precisam estar na mesma rede, com comunicação entre clientes liberada. Uma rede de convidados ou isolamento de clientes no roteador pode impedir a descoberta e as conexões. Se mDNS não funcionar, use o IP manualmente. O app não enumera arquivos privados dos aplicativos, `Android/data`, cartão SD nem pastas do PC sem seleção. Não há sincronização automática ou montagem SMB; os arquivos são enviados por escolha do usuário.
+Os aparelhos precisam estar na mesma rede, com comunicação entre clientes liberada. Uma rede de convidados ou isolamento de clientes no roteador pode impedir a descoberta e as conexões. Se mDNS não funcionar, use o IP manualmente. O app não enumera arquivos privados dos aplicativos, `Android/data` nem cartão SD. O PC compartilha apenas a pasta que você autorizar ao iniciar o servidor opcional abaixo. Não há sincronização automática ou montagem SMB; os arquivos são enviados por escolha do usuário.
+
+## Compartilhar uma pasta do PC com os celulares
+
+Se quiser navegar diretamente pelos arquivos de uma pasta do PC, baixe e extraia o artefato **MeuDrive-PC** da mesma execução do GitHub Actions (ou baixe o código desta branch). Instale Python 3.10 ou superior e execute, dentro da pasta extraída:
+
+```powershell
+python -m pip install -r scripts/requirements-pc.txt
+python scripts/pc-server.py --root "D:\ArquivosCompartilhados" --name "Meu PC"
+```
+
+No Linux/macOS, use `python3` e um caminho como `--root "$PWD/Compartilhados"`. A pasta precisa existir. O programa solicita a senha da casa sem exibi-la e mostra o endereço do PC. Autorize a porta TCP 8080 no firewall **apenas na rede privada**. A biblioteca opcional zeroconf anuncia o PC na descoberta; para mDNS, a rede deve permitir UDP 5353. Sem ela, digite o IP manualmente.
+
+No celular: **Arquivos → Encontrar servidores no Wi-Fi → Meu PC**. No A06, abra **Minha rede → Meu PC**. A pasta escolhida permite leitura, criação, envio e exclusão para quem tem a senha; não indique a raiz do disco se só deseja compartilhar uma pasta. O PC precisa permanecer ligado e com o programa aberto. Pressione Ctrl+C para parar. Transferências para o PC usam o mesmo protocolo em blocos e downloads com retomada. A pasta interna `.meudrive-transfers` fica protegida e os uploads incompletos expiram em 24 horas; a caixa de entrada do PC é mantida em memória até encerrar o programa.
+
+Para centralizar no A06, abra o endereço do A06 no navegador do PC e envie os arquivos desejados. Compartilhar a pasta do PC não cria uma segunda cópia automática no A06.
 
 ## Transferências e desempenho
 
@@ -63,6 +78,8 @@ JDK 17, Android SDK 34 e Build-Tools 34.0.0:
 ```
 
 APK: `app/build/outputs/apk/debug/app-debug.apk`. O wrapper Gradle 8.7 está incluído. A integração contínua repete testes, lint e geração do APK.
+
+O servidor opcional do PC tem quatro testes de integração (`python3 scripts/test-pc-server.py`) que cobrem autenticação, cookies, retomada, rollback, nomes repetidos, intervalos e isolamento de pastas.
 
 Os testes de JVM cobrem retomada após reinício, bloco interrompido, colisões, arquivo vazio, validação de nomes e offsets, mudança da raiz e intervalos HTTP. Testes HTTP iniciam o servidor real com contexto Android simulado e verificam envio/download, autenticação, isolamento de caminhos, métodos e origem. A interface web foi exercitada com Playwright em resoluções de celular e PC, incluindo falha e retomada de upload; isso não substitui o teste físico no A06.
 
