@@ -418,7 +418,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.command == 'GET':
             asset = viewer_asset(ASSETS, route)
             if asset is not None:
-                return self.reply(200, asset[0], asset[1])
+                return self.reply(200, asset[0], asset[1], {'Cache-Control':'public, max-age=86400'} if route.startswith('/pdfjs/') else None)
         if self.command == 'GET' and route in ('/', '/fonts/jakarta.ttf'):
             p = ASSETS / ('index.html' if route == '/' else 'fonts/jakarta.ttf')
             return self.reply(200, p.read_bytes(), 'text/html; charset=utf-8' if route == '/' else 'font/ttf')

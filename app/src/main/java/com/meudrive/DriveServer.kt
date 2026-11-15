@@ -59,7 +59,7 @@ class DriveServer(private val ctx: Context, private val peers: () -> List<Peer> 
         // Rejected bodies may remain unread; never reuse their HTTP connection.
         if (r.status.requestStatus >= 400) r.closeConnection(true)
         r.addHeader("X-Content-Type-Options", "nosniff")
-        r.addHeader("Cache-Control", if (s.uri == "/api/preview" && r.status.requestStatus in setOf(200, 304)) "private, max-age=60" else "no-store")
+        r.addHeader("Cache-Control", if (s.uri.startsWith("/pdfjs/") && r.status.requestStatus == 200) "public, max-age=86400" else if (s.uri == "/api/preview" && r.status.requestStatus in setOf(200, 304)) "private, max-age=60" else "no-store")
         r.addHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; frame-src 'self'; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-ancestors ${if (s.uri == "/pdf-viewer.html") "'self'" else "'none'"}")
         return r
     }
