@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory() as a,tempfile.TemporaryDirectory() as b:
         Image.new('RGB',(240,120),(n*3%255,60,180)).save(folder/f'foto-{n:03d}.jpg')
         os.utime(folder/f'foto-{n:03d}.jpg',(1000+n,1000+n))
     pdf=pymupdf.open();page=pdf.new_page();page.insert_text((50,50),'Documento PDF pagina 1');pdf.new_page().insert_text((50,50),'Segunda pagina');pdf.save(source.root/'documento.pdf');pdf.close()
-    subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=blue:s=256x144:r=12','-t','1','-an','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart',str(source.root/'video.mp4')],check=True)
+    subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=blue:s=256x144:r=12','-t','1','-an','-c:v','libvpx','-pix_fmt','yuv420p',str(source.root/'video.webm')],check=True)
     (source.root/'a-apagar.txt').write_text('selected for deletion')
     (source.root/'b-manter.txt').write_text('keep untouched')
     longname='Arquivo_com_nome_muito_longo_para_conferir_alinhamento_'*2+'.txt';(source.root/longname).write_text('long')
@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory() as a,tempfile.TemporaryDirectory() as b:
     try:
         with sync_playwright() as p:
             browser=p.chromium.launch(executable_path=os.environ.get('MEUDRIVE_CHROMIUM') or shutil.which('chromium') or shutil.which('google-chrome'),args=['--no-sandbox'])
-            page=browser.new_page(viewport=dict(width=390,height=844));errors=[];page.on('pageerror',lambda e:errors.append(str(e)));page.on('dialog',lambda d:d.accept())
+            print('Browser:',browser.version);page=browser.new_page(viewport=dict(width=390,height=844));errors=[];page.on('pageerror',lambda e:errors.append(str(e)));page.on('dialog',lambda d:d.accept())
             page.goto(f'http://127.0.0.1:{servers[0].server_port}');page.locator('#password').fill('media-test-password');page.locator('#login-button').click();page.locator('#used').filter(has_text='GB').wait_for()
             nav=lambda name:page.locator(('.mobile-nav' if page.viewport_size['width']<=720 else '.nav')+f' [data-page="{name}"]').click()
             nav('gallery');expect(page.locator('#gallery-count')).to_contain_text('60 de 64');page.locator('#gallery-more').click();expect(page.locator('#gallery-count')).to_contain_text('64 de 64')
