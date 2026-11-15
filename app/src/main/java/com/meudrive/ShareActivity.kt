@@ -96,7 +96,12 @@ class ShareActivity : Activity() {
             Ui.primary(this, "Este celular (para pegar no computador)") { sendLocal() },
             Ui.lp(this, 6, -1)
         )
-        val ps = discovery?.peers().orEmpty()
+        val discovered = discovery?.peers().orEmpty()
+        val primary = getSharedPreferences("cfg", 0).getString("client_url", null)?.let { value ->
+            try { val u = java.net.URI(value); Peer("Servidor principal salvo", u.host, if (u.port < 0) Cfg.PORT else u.port) }
+            catch (_: Exception) { null }
+        }
+        val ps = (listOfNotNull(primary) + discovered).distinctBy { "${it.host}:${it.port}" }
         ps.forEach { p ->
             targets.addView(Ui.secondary(this, p.name) { sendPeer(p) }, Ui.lp(this, 8, -1))
         }
@@ -114,6 +119,7 @@ class ShareActivity : Activity() {
     private fun startBusy(msg: String) {
         busy = true
         targets.visibility = View.GONE
+        action.visibility = View.GONE
         bar.progress = 0
         bar.visibility = View.VISIBLE
         tvTitle.text = msg
@@ -143,7 +149,7 @@ class ShareActivity : Activity() {
                 ?.use { c ->
                     if (c.moveToFirst()) {
                         c.getString(0)?.let { name = it }
-                        size = c.getLong(1)
+                        size = if (c.isNull(1)) -1 else c.getLong(1)
                     }
                 }
         } catch (_: Exception) {}
@@ -183,11 +189,17 @@ class ShareActivity : Activity() {
                 }
                 try {
                     val dest = unique(dir, name)
+                    val staging = File(getExternalFilesDir(null) ?: filesDir, ".local-transfers").apply { mkdirs() }
+                    staging.listFiles()?.filter { System.currentTimeMillis() - it.lastModified() > TransferStore.TTL }?.forEach { it.delete() }
+                    val part = File.createTempFile("local-", ".part", staging)
+                    try {
                     contentResolver.openInputStream(uri)!!.use { input ->
-                        FileOutputStream(dest).use { out ->
+                        FileOutputStream(part).use { out ->
                             copyStream(input, out, size)
                         }
                     }
+                    check(part.renameTo(dest)) { "Não foi possível guardar o arquivo" }
+                    } finally { part.delete() }
                     Inbox.add(this, "file", dest.name, "Este celular", "Transferencias/" + dest.name)
                     ok++
                 } catch (e: Exception) {
@@ -225,7 +237,9 @@ class ShareActivity : Activity() {
             return
         }
         startBusy("Enviando para " + p.name)
+        val batch = uris.toList()
         thread {
+            val failedUris = mutableListOf<Uri>()
             var ok = 0
             var fail = 0
             var err: String? = null
@@ -234,7 +248,7 @@ class ShareActivity : Activity() {
                     val code = postText(p, key, text.orEmpty())
                     if (code == 200) ok++ else { fail++; err = explain(code) }
                 } else {
-                    uris.forEachIndexed { idx, uri ->
+                    batch.forEachIndexed { idx, uri ->
                         val (name, size) = meta(uri)
                         runOnUiThread {
                             tvInfo.text = "Enviando " + (idx + 1) + " de " + uris.size + ": " + name
@@ -242,10 +256,10 @@ class ShareActivity : Activity() {
                         }
                         try {
                             val code = postFile(p, key, uri, name, size)
-                            if (code == 200) ok++ else { fail++; err = explain(code) }
+                            if (code == 200) ok++ else { fail++; failedUris.add(uri); err = explain(code) }
                         } catch (e: Exception) {
-                            fail++
-                            err = "Não consegui falar com " + p.name
+                            fail++; failedUris.add(uri)
+                            err = e.message ?: "Não consegui falar com " + p.name
                         }
                     }
                 }
@@ -253,7 +267,13 @@ class ShareActivity : Activity() {
                 fail++
                 err = "Não consegui falar com " + p.name
             }
-            runOnUiThread { showResult(ok, fail, err, false, p.name) }
+            runOnUiThread {
+                showResult(ok, fail, err, false, p.name)
+                if (fail > 0) {
+                    action.text = "Tentar novamente (retomar envio)"
+                    action.setOnClickListener { if (batch.isNotEmpty()) uris = failedUris.toList(); sendPeer(p) }
+                }
+            }
         }
     }
 
@@ -282,49 +302,21 @@ class ShareActivity : Activity() {
         }
     }
 
-    private fun postFile(p: Peer, key: String, uri: Uri, name: String, size0: Long): Int {
-        // o servidor precisa do Content-Length; se o tamanho é desconhecido, copia pro cache antes
-        var size = size0
-        var tmpFile: File? = null
-        if (size <= 0) {
-            val t = File.createTempFile("send", ".tmp", cacheDir)
-            contentResolver.openInputStream(uri)!!.use { i -> FileOutputStream(t).use { o -> i.copyTo(o) } }
-            tmpFile = t
-            size = t.length()
-        }
-        val srcFile = tmpFile
-        try {
-            val boundary = "----MeuDrive" + System.currentTimeMillis()
-            val safe = name.replace("\"", "_").replace("\r", "").replace("\n", "")
-            val head = ("--" + boundary + "\r\n" +
-                "Content-Disposition: form-data; name=\"file\"; filename=\"" + safe + "\"\r\n" +
-                "Content-Type: application/octet-stream\r\n\r\n").toByteArray(Charsets.UTF_8)
-            val tail = ("\r\n--" + boundary + "--\r\n").toByteArray()
-            val url = base(p) + "/api/upload?path=Transferencias&from=" +
-                URLEncoder.encode(Cfg.deviceName(this), "UTF-8")
-
-            val c = URL(url).openConnection() as HttpURLConnection
-            try {
-                c.requestMethod = "POST"
-                c.doOutput = true
-                c.connectTimeout = 5000
-                c.readTimeout = 10 * 60 * 1000
-                c.setRequestProperty("X-Key", key)
-                c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary + "; charset=UTF-8")
-                c.setFixedLengthStreamingMode(head.size.toLong() + size + tail.size.toLong())
-                c.outputStream.use { out ->
-                    out.write(head)
-                    val input = if (srcFile != null) FileInputStream(srcFile) else contentResolver.openInputStream(uri)!!
-                    input.use { copyStream(it, out, size) }
-                    out.write(tail)
+    private fun postFile(p: Peer, key: String, uri: Uri, name: String, size: Long): Int {
+        val started = System.nanoTime()
+        var last = 0L
+        TransferClient(this).send(base(p), key, uri, name, size) { sent, total ->
+            val now = System.nanoTime()
+            if (now - last > 150_000_000 || sent == total) {
+                last = now
+                val speed = sent / maxOf(0.1, (now - started) / 1e9) / 1048576
+                runOnUiThread {
+                    bar.progress = if (total > 0) (sent * 100 / total).toInt() else 100
+                    tvInfo.text = "$name • ${sent / 1048576} / ${total / 1048576} MB • %.1f MB/s".format(speed)
                 }
-                return c.responseCode
-            } finally {
-                c.disconnect()
             }
-        } finally {
-            srcFile?.delete()
         }
+        return 200
     }
 
     // ---------- resultado ----------

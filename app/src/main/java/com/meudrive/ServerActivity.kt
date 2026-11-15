@@ -40,11 +40,36 @@ class ServerActivity : Activity() {
         root.addView(Ui.text(ctx, "Servidor", 26f, Ui.TEXT, true))
         root.addView(Ui.text(ctx, "Este celular guarda seus arquivos.", 14f, Ui.MUTED))
 
+        val mode = Ui.card(ctx)
+        mode.addView(Ui.text(ctx, "Galaxy A06 • nuvem da casa", 18f, Ui.TEXT, true))
+        mode.addView(Ui.text(ctx, "No A06, marque este aparelho como principal. Nos demais, conecte-se ao IP dele. Todos podem enviar e baixar arquivos pela rede.", 13f, Ui.MUTED))
+        mode.addView(android.widget.Switch(ctx).apply {
+            text = "Este é o servidor principal"
+            isChecked = prefs().getBoolean("primary_server", false)
+            setOnCheckedChangeListener { _, checked -> prefs().edit().putBoolean("primary_server", checked).apply() }
+        }, Ui.lp(ctx, 10, -1))
+        mode.addView(android.widget.Switch(ctx).apply {
+            text = "Compartilhar armazenamento interno"
+            isChecked = prefs().getBoolean("shared_storage", false)
+            setOnCheckedChangeListener { button, checked ->
+                if (ServerService.running && checked != prefs().getBoolean("shared_storage", false)) { button.isChecked = !checked; toast("Desligue o servidor antes de mudar a pasta") }
+                else if (checked && !Environment.isExternalStorageManager()) {
+                    button.isChecked = false; toast("Permita acesso aos arquivos primeiro")
+                } else prefs().edit().putBoolean("shared_storage", checked).apply()
+            }
+        }, Ui.lp(ctx, 8, -1))
+        mode.addView(Ui.text(ctx, "Desativado: compartilha somente MeuDrive. Ativado: compartilha fotos, downloads e pastas permitidas do armazenamento interno. Android/data e arquivos privados dos apps ficam protegidos pelo Android.", 12f, Ui.MUTED))
+        root.addView(mode)
+
         val c1 = Ui.card(ctx).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = Ui.dp(ctx, 16) }
         status = Ui.text(ctx, "", 16f, Ui.TEXT, true)
         c1.addView(status)
         toggle = Ui.primary(ctx, "Ligar servidor") { toggleServer() }
         c1.addView(toggle, Ui.lp(ctx))
+        c1.addView(Ui.secondary(ctx, "Abrir arquivos no navegador do app") {
+            if (ServerService.running) startActivity(Intent(ctx, ClientActivity::class.java).putExtra("url", "http://127.0.0.1:${Cfg.PORT}"))
+            else toast("Ligue o servidor primeiro")
+        }, Ui.lp(ctx, 8, -1))
         root.addView(c1)
 
         val cT = Ui.card(ctx)
@@ -111,9 +136,10 @@ class ServerActivity : Activity() {
         root.addView(c2)
 
         val c3 = Ui.card(ctx)
-        c3.addView(Ui.text(ctx, "Para ficar ligado 24h", 16f, Ui.TEXT, true))
+        c3.addView(Ui.text(ctx, "Servidor dedicado no A06", 16f, Ui.TEXT, true))
         checks = Ui.text(ctx, "", 14f, Ui.MUTED)
         c3.addView(checks)
+        c3.addView(Ui.text(ctx, "Deixe no carregador, em local ventilado, e no Wi-Fi do roteador. Na Samsung: Bateria → Limites de uso em segundo plano → Aplicativos nunca suspensos → MeuDrive. Não é necessário manter a tela ligada. Reserve espaço livre para o Android; o app não força CPU em 100%.", 13f, Ui.MUTED))
         c3.addView(Ui.secondary(ctx, "1. Permitir acesso aos arquivos") {
             startActivity(
                 Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))
@@ -167,23 +193,25 @@ class ServerActivity : Activity() {
     }
 
     private fun toggleServer() {
-        if (prefs().getBoolean("on", false)) {
+        if (ServerService.running) {
             stopService(Intent(this, ServerService::class.java))
             prefs().edit().putBoolean("on", false).apply()
         } else {
             if (prefs().getString("pwhash", null) == null) {
                 toast("Defina uma senha primeiro"); return
             }
+            prefs().edit().remove("server_error").apply()
             startForegroundService(Intent(this, ServerService::class.java))
         }
         status.postDelayed({ refresh() }, 600)
     }
 
     private fun refresh() {
-        val on = prefs().getBoolean("on", false)
+        val on = ServerService.running
         toggle.text = if (on) "Desligar servidor" else "Ligar servidor"
         val sb = StringBuilder(if (on) "● Servidor ligado" else "○ Servidor desligado")
         if (on) ips().forEach { sb.append("\nhttp://").append(it).append(":").append(Cfg.PORT) }
+        if (!on) prefs().getString("server_error", null)?.let { sb.append("\n").append(it) }
         status.text = sb.toString()
         status.setTextColor(if (on) Color.parseColor("#0F9D58") else Ui.MUTED)
 

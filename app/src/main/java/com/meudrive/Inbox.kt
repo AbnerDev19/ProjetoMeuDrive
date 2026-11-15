@@ -88,6 +88,7 @@ object Notifier {
             .setContentIntent(open)
             .setAutoCancel(true)
             .build()
+        if (!nm.areNotificationsEnabled()) return
         nm.notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), n)
     }
 }

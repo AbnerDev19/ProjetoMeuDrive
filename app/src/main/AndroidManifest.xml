@@ -13,7 +13,8 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <application
-        android:label="Meu Drive"
+        android:label="MeuDrive"
+        android:icon="@drawable/ic_drive"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
 
