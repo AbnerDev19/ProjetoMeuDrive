@@ -9,25 +9,31 @@ import java.net.URL
 import java.net.URLEncoder
 
 /** Same chunk protocol used by the browser. Re-selecting the same document resumes within 24h. */
-class TransferClient(private val ctx: Context) {
-    fun send(base: String, key: String, uri: Uri, name: String, declaredSize: Long, progress: (Long, Long) -> Unit) {
+class TransferClient(private val ctx: Context, private val cookie: String? = null) {
+    fun send(base: String, key: String?, uri: Uri, name: String, declaredSize: Long, destination: String = "Transferencias", cancelled: () -> Boolean = { false }, progress: (Long, Long) -> Unit) {
+        fun checkCancelled() { if (cancelled() || Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("Envio cancelado") }
+        checkCancelled()
         var temporary: File? = null
         try {
             val size = if (declaredSize >= 0) declaredSize else {
                 temporary = File.createTempFile("unknown-size", ".tmp", ctx.cacheDir)
-                ctx.contentResolver.openInputStream(uri)!!.use { input -> temporary!!.outputStream().use { input.copyTo(it, 256 * 1024) } }
+                ctx.contentResolver.openInputStream(uri)!!.use { input -> temporary!!.outputStream().use { out ->
+                    val buffer = ByteArray(256 * 1024)
+                    while (true) { checkCancelled(); val n=input.read(buffer); if(n<0)break;out.write(buffer,0,n) }
+                } }
                 temporary!!.length()
             }
             val prefs = ctx.getSharedPreferences("transfers", 0)
-            val identity = Cfg.hash("$base|$uri|$name|$size")
+            val identity = Cfg.hash("$base|$destination|$uri|$name|$size")
             var state = prefs.getString(identity, null)?.let { id ->
                 try { json(base, key, "/api/transfer/status?id=$id") } catch (_: Exception) { null }
             }
-            if (state == null) state = json(base, key, "/api/transfer/start", "path=Transferencias&name=${enc(name)}&size=$size&from=${enc(Cfg.deviceName(ctx))}")
+            if (state == null) state = json(base, key, "/api/transfer/start", "path=${enc(destination)}&name=${enc(name)}&size=$size&from=${enc(Cfg.deviceName(ctx))}")
             prefs.edit().putString(identity, state.getString("id")).apply()
             var current: JSONObject = state
             var failures = 0
             while (!current.getBoolean("done")) {
+                checkCancelled()
                 val offset = current.getLong("offset")
                 val length = minOf(TransferStore.CHUNK.toLong(), size - offset)
                 val conn = connection(base + "/api/transfer/chunk?id=${current.getString("id")}&offset=$offset", key).apply {
@@ -39,6 +45,7 @@ class TransferClient(private val ctx: Context) {
                     input.use { src ->
                         var skip = offset
                         while (skip > 0) {
+                            checkCancelled()
                             val n = src.skip(skip)
                             if (n > 0) skip -= n else { check(src.read() >= 0) { "Arquivo de origem mudou" }; skip-- }
                         }
@@ -46,6 +53,7 @@ class TransferClient(private val ctx: Context) {
                             var remaining = length
                             val buffer = ByteArray(256 * 1024)
                             while (remaining > 0) {
+                                checkCancelled()
                                 val n = src.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
                                 check(n > 0) { "Arquivo de origem mudou" }
                                 out.write(buffer, 0, n); remaining -= n; progress(offset + length - remaining, size)
@@ -54,7 +62,9 @@ class TransferClient(private val ctx: Context) {
                     }
                     current = response(conn)
                     failures = 0
+                } catch (e: java.util.concurrent.CancellationException) { throw e
                 } catch (e: Exception) {
+                    checkCancelled()
                     if (++failures >= 4) throw e
                     Thread.sleep(500L * failures)
                     current = json(base, key, "/api/transfer/status?id=${current.getString("id")}")
@@ -64,7 +74,7 @@ class TransferClient(private val ctx: Context) {
             progress(size, size)
         } finally { temporary?.delete() }
     }
-    private fun json(base: String, key: String, path: String, body: String? = null): JSONObject {
+    private fun json(base: String, key: String?, path: String, body: String? = null): JSONObject {
         val c = connection(base + path, key)
         try {
             if (body != null) {
@@ -76,8 +86,8 @@ class TransferClient(private val ctx: Context) {
             return response(c)
         } finally { c.disconnect() }
     }
-    private fun connection(url: String, key: String) = (URL(url).openConnection() as HttpURLConnection).apply {
-        connectTimeout = 5000; readTimeout = 120000; instanceFollowRedirects = false; setRequestProperty("X-Key", key)
+    private fun connection(url: String, key: String?) = (URL(url).openConnection() as HttpURLConnection).apply {
+        connectTimeout = 5000; readTimeout = 120000; instanceFollowRedirects = false; key?.let { setRequestProperty("X-Key", it) }; cookie?.let { setRequestProperty("Cookie", it) }
     }
     private fun response(c: HttpURLConnection): JSONObject {
         val code = c.responseCode

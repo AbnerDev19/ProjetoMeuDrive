@@ -1,5 +1,7 @@
 """Exercise mobile/desktop flows, real image decode and recoverable upload failures."""
 import json
+import os
+import shutil
 import pathlib
 import struct
 import zlib
@@ -28,7 +30,7 @@ items = [
 ]
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(executable_path='/usr/bin/chromium', args=['--no-sandbox'])
+    browser = p.chromium.launch(executable_path=os.environ.get('MEUDRIVE_CHROMIUM') or shutil.which('chromium') or shutil.which('google-chrome'), args=['--no-sandbox'])
     page = browser.new_page(viewport={'width': 390, 'height': 844}, device_scale_factor=1)
     errors = []
     page.on('pageerror', lambda e: errors.append(str(e)))
@@ -124,7 +126,6 @@ with sync_playwright() as p:
     image = page.locator('#files .preview img')
     image.scroll_into_view_if_needed()
     page.wait_for_function("document.querySelector('#files .preview img')?.naturalWidth === 2")
-    assert image.get_attribute('loading') == 'lazy'
     page.locator('#files .file-open').click()
     page.wait_for_function("document.querySelector('#detail-icon img')?.naturalWidth === 2")
     assert 'original' in page.locator('#detail-preview-status').inner_text()

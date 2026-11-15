@@ -7,6 +7,9 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Matrix
+import android.graphics.pdf.PdfRenderer
+import android.media.MediaMetadataRetriever
+import android.os.ParcelFileDescriptor
 import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -35,7 +38,7 @@ class ImagePreview(private val context: Context) {
         require(file.isFile) { "Foto não encontrada" }
         val edge = edge(requested, full)
         val key = MessageDigest.getInstance("SHA-256")
-            .digest("${file.canonicalPath}|${file.length()}|${file.lastModified()}|$edge|v1".toByteArray())
+            .digest("${file.canonicalPath}|${file.length()}|${file.lastModified()}|$edge|v2".toByteArray())
             .joinToString("") { "%02x".format(it) }
         val etag = "\"preview-$key\""
         val cached = File(cache, "$key.jpg")
@@ -43,19 +46,13 @@ class ImagePreview(private val context: Context) {
             cached.setLastModified(System.currentTimeMillis())
             return Result(it, etag)
         }
-        check(decoders.tryAcquire()) { "Prévias ocupadas; tente novamente" }
+        check(decoders.tryAcquire(2, java.util.concurrent.TimeUnit.SECONDS)) { "Prévias ocupadas; tente novamente" }
         try {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(file.path, bounds)
-            require(bounds.outWidth > 0 && bounds.outHeight > 0 && bounds.outMimeType in rasterMimeTypes) {
-                "Formato sem prévia. Baixe o original para abrir no aplicativo adequado."
+            var bitmap = when (MediaIndex.kind(file)) {
+                "video" -> video(file, edge)
+                "pdf" -> pdf(file, edge)
+                else -> photo(file, edge)
             }
-            val options = BitmapFactory.Options().apply {
-                inSampleSize = sample(bounds.outWidth, bounds.outHeight, edge)
-                inPreferredConfig = Bitmap.Config.RGB_565
-            }
-            var bitmap = BitmapFactory.decodeFile(file.path, options)
-                ?: throw IllegalArgumentException("Foto inválida ou formato não suportado")
             try {
                 val orientation = runCatching {
                     ExifInterface(file).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
@@ -98,6 +95,58 @@ class ImagePreview(private val context: Context) {
                 return Result(bytes, etag)
             } finally { bitmap.recycle() }
         } finally { decoders.release() }
+    }
+
+    private fun photo(file: File, edge: Int): Bitmap {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, bounds)
+        require(bounds.outWidth > 0 && bounds.outHeight > 0 && bounds.outMimeType in rasterMimeTypes) {
+            "Formato sem prévia. Baixe o original para abrir no aplicativo adequado."
+        }
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sample(bounds.outWidth, bounds.outHeight, edge)
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }
+        return BitmapFactory.decodeFile(file.path, options)
+            ?: throw IllegalArgumentException("Foto inválida ou formato não suportado")
+    }
+
+    private fun video(file: File, edge: Int): Bitmap {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(file.path)
+            val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+            val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+            require(width > 0 && height > 0) { "Vídeo sem dimensões válidas" }
+            val ratio = minOf(1.0, edge.toDouble() / maxOf(width, height))
+            return retriever.getScaledFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                maxOf(1, (width * ratio).toInt()), maxOf(1, (height * ratio).toInt()))
+                ?: throw IllegalArgumentException("Não foi possível gerar a prévia deste vídeo")
+        } catch (error: RuntimeException) {
+            throw IllegalArgumentException("Vídeo sem prévia; tente abrir ou baixar o original", error)
+        } finally { retriever.release() }
+    }
+
+    private fun pdf(file: File, edge: Int): Bitmap {
+        try {
+            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+                PdfRenderer(descriptor).use { renderer ->
+                    require(renderer.pageCount > 0) { "PDF sem páginas" }
+                    renderer.openPage(0).use { page ->
+                        val ratio = edge.toDouble() / maxOf(page.width, page.height)
+                        val bitmap = Bitmap.createBitmap(maxOf(1, (page.width * ratio).toInt()),
+                            maxOf(1, (page.height * ratio).toInt()), Bitmap.Config.ARGB_8888)
+                        try {
+                            bitmap.eraseColor(Color.WHITE)
+                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            return bitmap
+                        } catch (error: Exception) { bitmap.recycle(); throw error }
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            throw IllegalArgumentException("PDF protegido, inválido ou sem prévia; tente abrir o documento", error)
+        }
     }
 
     @Synchronized private fun trim() {

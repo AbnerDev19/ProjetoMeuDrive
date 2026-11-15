@@ -8,6 +8,9 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.webkit.JavascriptInterface
+import android.os.Handler
+import android.os.Looper
 import android.webkit.CookieManager
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
@@ -29,6 +32,35 @@ class ClientActivity : Activity() {
     private var chooserCb: ValueCallback<Array<Uri>>? = null
     private var currentOrigin: String? = null
     private var mode = "lan"
+    private var uploadOrigin: String? = null
+    private var uploadPath = ""
+    private var nativeJob: String? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private val monitor = object : Runnable {
+        override fun run() {
+            TransferService.job(nativeJob)?.let { job ->
+                if (job.origin == currentOrigin && !isFinishing) {
+                    web.evaluateJavascript("window.meuDriveNativeProgress&&window.meuDriveNativeProgress(${job.snapshot()});", null)
+                }
+                if (job.state !in listOf("queued", "running")) nativeJob = null
+            }
+            handler.postDelayed(this, 700)
+        }
+    }
+    inner class UploadBridge {
+        @JavascriptInterface fun chooseUpload(destination: String) {
+            runOnUiThread {
+                val origin = currentOrigin ?: return@runOnUiThread
+                if (web.url?.let { ServerAddress.parse(origin).accepts(it) } != true) return@runOnUiThread
+                if (destination.length > 4096 || !StorageBoundary.permitted(destination)) return@runOnUiThread
+                uploadOrigin = origin; uploadPath = destination
+                startActivityForResult(Intent.createChooser(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"; putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                }, "Enviar arquivos em segundo plano"), 31)
+            }
+        }
+    }
     private val prefs get() = getSharedPreferences("cfg", 0)
     private fun dp(v: Int) = Ui.dp(this, v)
 
@@ -49,14 +81,15 @@ class ClientActivity : Activity() {
         bar.addView(Ui.primary(this, "Abrir") { connect() }, LinearLayout.LayoutParams(-2, dp(48)).apply { leftMargin = dp(6) })
         col.addView(bar)
         val options = LinearLayout(this).apply { setPadding(dp(8), 0, dp(8), 0) }
-        options.addView(Ui.secondary(this, "Encontrar no Wi-Fi") { find() }.apply { textSize = 11f }, LinearLayout.LayoutParams(0, dp(44), 1f))
-        options.addView(Ui.secondary(this, "Fora de casa") { startActivity(Intent(this, RemoteAccessActivity::class.java)) }.apply { textSize = 11f }, LinearLayout.LayoutParams(0, dp(44), 1f))
-        options.addView(Ui.secondary(this, "Repetir") { web.reload() }.apply { textSize = 11f }, LinearLayout.LayoutParams(-2, dp(44)))
+        options.addView(Ui.secondary(this, "Wi-Fi") { find() }.apply { textSize = 11f }, LinearLayout.LayoutParams(0, -2, 1f))
+        options.addView(Ui.secondary(this, "Fora de casa") { startActivity(Intent(this, RemoteAccessActivity::class.java)) }.apply { textSize = 11f }, LinearLayout.LayoutParams(0, -2, 1f))
+        options.addView(Ui.secondary(this, "Repetir") { web.reload() }.apply { textSize = 11f }, LinearLayout.LayoutParams(0, -2, .7f))
         col.addView(options)
         status = Ui.text(this, "Selecione o servidor para ver os arquivos.", 11f, Ui.MUTED).apply { setPadding(dp(12), dp(4), dp(12), dp(4)) }
         col.addView(status)
         web = WebView(this)
         web.settings.apply { javaScriptEnabled = true; domStorageEnabled = true; allowFileAccess = false; allowContentAccess = true }
+        web.addJavascriptInterface(UploadBridge(), "MeuDriveNative")
         web.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, icon: android.graphics.Bitmap?) { status.text = "Conectando…" }
             override fun onPageFinished(v: WebView, url: String) { if (status.text == "Conectando…") status.text = "${if (mode == "remote") "Fora de casa" else "Wi-Fi"} • ${currentOrigin.orEmpty()}" }
@@ -95,6 +128,7 @@ class ClientActivity : Activity() {
         }
         col.addView(web, LinearLayout.LayoutParams(-1, 0, 1f)); setContentView(col)
         if (addr.text.isNotBlank()) connect()
+        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 92)
     }
     private fun saved(which: String): String = prefs.getString(if (which == "remote") "remote_url" else "lan_url", null)
         ?: if (which == "lan") prefs.getString("client_url", "").orEmpty().takeIf { raw ->
@@ -107,9 +141,9 @@ class ClientActivity : Activity() {
             mode = "lan"; val p = peers[which]; addr.setText("http://${p.host}:${p.port}"); connect()
         }.setNeutralButton("Endereço Wi-Fi salvo") { _, _ -> mode = "lan"; addr.setText(saved("lan")); connect() }.setNegativeButton("Cancelar", null).show()
     }
-    override fun onResume() { super.onResume(); discovery = Discovery(this).also { it.start() } }
-    override fun onPause() { discovery?.stop(); discovery = null; super.onPause() }
-    override fun onDestroy() { chooserCb?.onReceiveValue(null); chooserCb = null; web.destroy(); super.onDestroy() }
+    override fun onResume() { super.onResume(); handler.post(monitor); discovery = Discovery(this).also { it.start() } }
+    override fun onPause() { handler.removeCallbacks(monitor); discovery?.stop(); discovery = null; super.onPause() }
+    override fun onDestroy() { handler.removeCallbacks(monitor); web.removeJavascriptInterface("MeuDriveNative"); chooserCb?.onReceiveValue(null); chooserCb = null; web.destroy(); super.onDestroy() }
     private fun connect() {
         try {
             val server = ServerAddress.parse(addr.text.toString())
@@ -125,6 +159,16 @@ class ClientActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 31 && resultCode == RESULT_OK && data != null) {
+            val origin = uploadOrigin
+            if (origin == null || origin != currentOrigin) { status.text = "O servidor mudou. Selecione os arquivos novamente."; return }
+            val selected = data.clipData?.let { cd -> List(cd.itemCount) { cd.getItemAt(it).uri } } ?: listOfNotNull(data.data)
+            try {
+                nativeJob = TransferService.start(this, selected, origin, uploadPath, cookie = CookieManager.getInstance().getCookie(origin))
+                status.text = "Envio na notificação do Android; continua com a tela apagada."
+            } catch (e: Exception) { status.text = e.message ?: "Não foi possível iniciar o envio" }
+            uploadOrigin = null
+        }
         if (requestCode == 30) {
             val selected = if (resultCode != RESULT_OK || data == null) null else data.clipData?.let { cd -> Array(cd.itemCount) { cd.getItemAt(it).uri } } ?: data.data?.let { arrayOf(it) }
             chooserCb?.onReceiveValue(selected); chooserCb = null

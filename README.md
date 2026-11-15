@@ -2,6 +2,12 @@
 
 Sua nuvem pessoal na rede de casa: um Galaxy A06 guarda os arquivos; PCs e outros celulares enviam e baixam pela rede local. Android 11 ou superior, sem root. Interface inspirada no design CloudVault fornecido, com fonte Plus Jakarta Sans incluída no APK e funcionamento sem CDNs ou internet.
 
+## Versão 1.3
+
+Galeria recursiva de fotos, vídeos e PDFs; miniaturas e visualizadores dentro do app; leitor PDF offline com páginas/zoom; seleção por toque longo e exclusão em lote; cópia direta entre servidores e clientes ativos em Minha rede. Layout revisado para telas de 320 a 1440 pixels e envio nativo em primeiro plano para continuar com a tela apagada.
+
+Leia o [guia da versão 1.3](docs/VERSAO-1.3.md), com preparação do A06, biblioteca, operações em lote, limites de formatos e instruções para segundo plano. O Android ainda pode interromper processos; a versão não promete uptime absoluto.
+
 ## Novidades da versão 1.2
 
 - Fotos agora têm miniaturas autenticadas e visualizador com correção de orientação, cache e tratamento de formatos não suportados.
@@ -46,7 +52,7 @@ Os scripts executam `adb install -r` somente nos aparelhos conectados e autoriza
 - **Ver arquivos de outro celular:** ligue o servidor também nele, permita acesso e abra **Minha rede** no navegador ou use a descoberta do app. Cada celular mantém seu armazenamento; escolha o A06 como destino para centralizar cópias.
 - **Enviar texto/link:** use Compartilhar no Android ou a tela Compartilhados do navegador.
 
-Os aparelhos precisam estar na mesma rede, com comunicação entre clientes liberada. Uma rede de convidados ou isolamento de clientes no roteador pode impedir a descoberta e as conexões. Se mDNS não funcionar, use o IP manualmente. O app não enumera arquivos privados dos aplicativos, `Android/data` nem cartão SD. O PC compartilha apenas a pasta que você autorizar ao iniciar o servidor opcional abaixo. Não há sincronização automática ou montagem SMB; os arquivos são enviados por escolha do usuário.
+Os aparelhos precisam estar na mesma rede, com comunicação entre clientes liberada. Uma rede de convidados ou isolamento de clientes no roteador pode impedir a descoberta e as conexões. Se mDNS não funcionar, use o IP manualmente. O app não enumera arquivos privados dos aplicativos, `Android/data`, `Android/obb` nem cartão SD. O PC compartilha apenas a pasta que você autorizar ao iniciar o servidor opcional abaixo. Não há sincronização automática ou montagem SMB; os arquivos são enviados por escolha do usuário.
 
 ## Compartilhar uma pasta do PC com os celulares
 
@@ -67,7 +73,7 @@ Para centralizar no A06, abra o endereço do A06 no navegador do PC e envie os a
 
 - Uploads em blocos de até **8 MiB**, buffer de **256 KiB**, sem carregar o arquivo inteiro em RAM.
 - Blocos são gravados diretamente na área de preparação no armazenamento do servidor e movidos para o destino ao concluir, sem uma segunda cópia completa. Uma queda de conexão desfaz apenas o bloco incompleto.
-- Progresso no disco por **24 horas**. No navegador, use **Retomar**; após recarregar, selecione o mesmo arquivo original, na mesma pasta e no mesmo navegador. No Android, tente novamente ou selecione o mesmo documento. Não altere o arquivo original durante o envio. Mantenha a tela de envio aberta; o envio dos clientes ainda não é um serviço em primeiro plano.
+- Progresso no disco por **24 horas**. No navegador, use **Retomar**; após recarregar, selecione o mesmo arquivo original, na mesma pasta e no mesmo navegador. No Android, tente novamente ou selecione o mesmo documento. Não altere o arquivo original durante o envio. No aplicativo Android, acompanhe o serviço de envio pela notificação; ele pode continuar com a tela apagada. Em navegadores externos, mantenha a aba ativa.
 - Até duas requisições de blocos admitidas; gravação dos blocos serializada para manter o disco e as confirmações consistentes. Não há paralelismo ilimitado.
 - Download com `Range`, `ETag` e `If-Range` para permitir retomada por clientes compatíveis. O DownloadManager do Android pode retomar downloads.
 - Arquivos com mesmo nome recebem sufixo em vez de substituir o existente. Arquivos incompletos não aparecem na pasta de destino. A caixa de entrada registra os recebidos.

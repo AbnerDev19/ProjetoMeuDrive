@@ -13,12 +13,16 @@ import os
 from pathlib import Path
 import re
 import secrets
+import subprocess
 import shutil
 import socket
 import threading
 import time
 import urllib.parse
 import uuid
+from viewer_assets import viewer_asset
+from peer_ops import PeerRegistry, PeerOperations, selected
+from collections import deque
 
 CHUNK = 8 * 1024 * 1024
 RESERVE = 128 * 1024 * 1024
@@ -26,6 +30,13 @@ TTL = 24 * 60 * 60
 PREVIEW_CACHE = 24 * 1024 * 1024
 PREVIEW_FORMATS = {'JPEG', 'PNG', 'WEBP', 'GIF', 'BMP', 'AVIF', 'HEIF', 'HEIC'}
 ASSETS = Path(__file__).resolve().parents[1] / 'app/src/main/assets'
+PHOTO_EXTENSIONS = {'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif', 'avif'}
+VIDEO_EXTENSIONS = {'mp4', 'm4v', 'mov', 'mkv', 'webm', '3gp', 'avi', 'mpeg', 'mpg'}
+SAFE_MIME = {'jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png','webp':'image/webp','gif':'image/gif','bmp':'image/bmp','heic':'image/heic','heif':'image/heic','avif':'image/avif','mp4':'video/mp4','m4v':'video/mp4','mov':'video/quicktime','mkv':'video/x-matroska','webm':'video/webm','3gp':'video/3gpp','avi':'video/x-msvideo','mpeg':'video/mpeg','mpg':'video/mpeg','pdf':'application/pdf'}
+
+def media_kind(file):
+    ext = file.suffix.lower().lstrip('.')
+    return 'photo' if ext in PHOTO_EXTENSIONS else 'video' if ext in VIDEO_EXTENSIONS else 'pdf' if ext == 'pdf' else None
 
 
 class Drive:
@@ -44,7 +55,11 @@ class Drive:
         self.tokens = {}
         self.attempts = {}
         self.peers = {}
+        self.registry = PeerRegistry()
+        self.peer_ops = PeerOperations(self.resolve, lambda: list(self.peers.values()), lambda: self.key, lambda: self.name)
         self.inbox = []
+        self.media_cache = None
+        self.media_lock = threading.Lock()
         self.zeroconf = None
         self.advertisement = None
         self.browser = None
@@ -159,7 +174,7 @@ class Drive:
             raise ValueError('Foto não encontrada')
         edge = 1280 if full else max(64, min(1280, requested))
         st = file.stat()
-        key = hashlib.sha256(f'{file.resolve()}|{st.st_size}|{st.st_mtime_ns}|{edge}|v1'.encode()).hexdigest()
+        key = hashlib.sha256(f'{file.resolve()}|{st.st_size}|{st.st_mtime_ns}|{edge}|v2'.encode()).hexdigest()
         etag = f'"preview-{key}"'
         cache = self.stage / 'previews'
         cache.mkdir(exist_ok=True)
@@ -170,35 +185,42 @@ class Drive:
             return data, etag
         except FileNotFoundError:
             pass
-        if not self.preview_slots.acquire(blocking=False):
+        if not self.preview_slots.acquire(timeout=2):
             raise ValueError('Prévias ocupadas; tente novamente')
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('error', Image.DecompressionBombWarning)
-                with Image.open(file) as image:
-                    if image.format not in PREVIEW_FORMATS or image.width * image.height > 40_000_000:
-                        raise ValueError('Formato ou dimensões sem prévia; baixe o original')
-                    # JPEG draft decoding reduces memory before EXIF correction and scaling.
-                    image.draft('RGB', (edge * 2, edge * 2))
-                    oriented = ImageOps.exif_transpose(image)
-                    try:
-                        oriented.thumbnail((edge, edge), Image.Resampling.LANCZOS)
-                        if oriented.mode in ('RGBA', 'LA') or 'transparency' in oriented.info:
-                            rgba = oriented.convert('RGBA')
-                            rgb = Image.new('RGB', oriented.size, 'white')
-                            rgb.paste(rgba, mask=rgba.getchannel('A'))
-                            rgba.close()
-                        else:
-                            rgb = oriented.convert('RGB')
-                        try:
-                            output = io.BytesIO()
-                            rgb.save(output, format='JPEG', quality=82)
-                            data = output.getvalue()
-                        finally:
-                            rgb.close()
-                    finally:
-                        if oriented is not image:
-                            oriented.close()
+            kind = media_kind(file)
+            if kind == 'pdf':
+                try:
+                    import pymupdf
+                    with pymupdf.open(file) as document:
+                        if document.is_encrypted or document.page_count == 0:
+                            raise ValueError('PDF protegido ou sem páginas')
+                        page = document[0]
+                        scale = edge / max(page.rect.width, page.rect.height)
+                        pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
+                        data = pixmap.tobytes('jpeg')
+                except ImportError as error:
+                    raise ValueError('Instale PyMuPDF para prévias de PDF no PC') from error
+                except Exception as error:
+                    raise ValueError('PDF inválido, protegido ou sem prévia') from error
+            elif kind == 'video':
+                executable = shutil.which('ffmpeg')
+                if not executable:
+                    raise ValueError('Instale ffmpeg para gerar prévias de vídeo no PC; o vídeo ainda pode ser aberto')
+                ext = file.suffix.lower().lstrip('.')
+                demux = 'mov' if ext in {'mp4','m4v','mov','3gp'} else 'matroska' if ext in {'mkv','webm'} else 'avi' if ext == 'avi' else 'mpeg'
+                command = [executable, '-v', 'error', '-nostdin', '-threads', '1', '-protocol_whitelist', 'file,pipe',
+                           '-f', demux, '-i', str(file), '-frames:v', '1', '-vf', f'scale={edge}:{edge}:force_original_aspect_ratio=decrease',
+                           '-threads', '1', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1']
+                try:
+                    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=True)
+                    data = result.stdout
+                    if not data or len(data) > 8 * 1024 * 1024:
+                        raise ValueError('Vídeo sem prévia válida')
+                except (OSError, subprocess.SubprocessError) as error:
+                    raise ValueError('Vídeo sem prévia; tente reproduzir ou baixar o original') from error
+            else:
+                data = self.photo_bytes(file, edge)
             with self.preview_lock:
                 temp = cache / (key + '-' + secrets.token_hex(8) + '.tmp')
                 try:
@@ -219,6 +241,69 @@ class Drive:
             raise ValueError('Formato sem prévia; baixe o original para abrir') from error
         finally:
             self.preview_slots.release()
+
+    @staticmethod
+    def photo_bytes(file, edge):
+        from PIL import Image, ImageOps
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', Image.DecompressionBombWarning)
+            with Image.open(file) as image:
+                if image.format not in PREVIEW_FORMATS or image.width * image.height > 40_000_000:
+                    raise ValueError('Formato ou dimensões sem prévia; baixe o original')
+                # JPEG draft decoding reduces memory before EXIF correction and scaling.
+                image.draft('RGB', (edge * 2, edge * 2))
+                oriented = ImageOps.exif_transpose(image)
+                try:
+                    oriented.thumbnail((edge, edge), Image.Resampling.LANCZOS)
+                    if oriented.mode in ('RGBA', 'LA') or 'transparency' in oriented.info:
+                        rgba = oriented.convert('RGBA')
+                        rgb = Image.new('RGB', oriented.size, 'white')
+                        rgb.paste(rgba, mask=rgba.getchannel('A'))
+                        rgba.close()
+                    else:
+                        rgb = oriented.convert('RGB')
+                    try:
+                        output = io.BytesIO()
+                        rgb.save(output, format='JPEG', quality=82)
+                        data = output.getvalue()
+                    finally:
+                        rgb.close()
+                finally:
+                    if oriented is not image:
+                        oriented.close()
+        return data
+
+    def media(self, kind='all', offset=0, limit=60, refresh=False):
+        if kind not in {'all','photo','video','pdf'} or offset < 0 or not 1 <= limit <= 100:
+            raise ValueError('Página ou tipo de mídia inválido')
+        with self.media_lock:
+            now = time.time()
+            if refresh or self.media_cache is None or now - self.media_cache['time'] > 60:
+                found=[]; pending=deque([self.root]); examined=0; partial=False
+                while pending:
+                    if len(found)>=50000 or examined>=200000 or time.time()-now>10:
+                        partial=True;break
+                    folder=pending.popleft()
+                    try: entries=list(folder.iterdir())
+                    except OSError: partial=True;continue
+                    for file in entries:
+                        examined+=1
+                        if examined>200000 or len(found)>=50000 or (examined % 256 == 0 and time.time()-now>10):
+                            partial=True;break
+                        if file.is_symlink() or file.name in {'.transfers','.local-transfers','.meudrive-transfers'}:continue
+                        try:
+                            relative=file.relative_to(self.root).as_posix();self.resolve(relative)
+                            if file.is_dir():pending.append(file)
+                            elif file.is_file() and media_kind(file):
+                                st=file.stat();found.append(dict(name=file.name,path=relative,kind=media_kind(file),size=st.st_size,mtime=int(st.st_mtime*1000),dir=False))
+                        except (OSError,ValueError):continue
+                found.sort(key=lambda item:(-item['mtime'],item['path']))
+                self.media_cache=dict(items=found,time=now,partial=partial)
+            result=self.media_cache
+            filtered=result['items'] if kind=='all' else [item for item in result['items'] if item['kind']==kind]
+            items=filtered[offset:offset+limit];next_offset=offset+len(items)
+            return dict(items=items,total=len(filtered),nextOffset=next_offset if next_offset<len(filtered) else None,
+                        partial=result['partial'],scannedAt=int(result['time']*1000))
 
     def discover(self, port):
         try:
@@ -249,6 +334,7 @@ class Drive:
         self.browser = ServiceBrowser(self.zeroconf, '_meudrive._tcp.local.', Listener())
 
     def close(self):
+        self.peer_ops.close()
         if self.zeroconf:
             self.zeroconf.unregister_service(self.advertisement)
             self.zeroconf.close()
@@ -269,6 +355,9 @@ class Server(http.server.ThreadingHTTPServer):
         self.drive = drive
         self.slots = threading.BoundedSemaphore(16)
         super().__init__(address, Handler)
+    def server_close(self):
+        self.drive.peer_ops.close()
+        super().server_close()
     def process_request(self, request, address):
         if self.slots.acquire(blocking=False):
             try:
@@ -286,7 +375,7 @@ class Server(http.server.ThreadingHTTPServer):
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    server_version = 'MeuDrivePC/1.2'
+    server_version = 'MeuDrivePC/1.3'
     def setup(self):
         super().setup()
         self.connection.settimeout(120)
@@ -303,12 +392,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header('Connection', 'close')
         self.send_header('Cache-Control', (extra or {}).get('Cache-Control', 'no-store'))
         self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; frame-src 'self'; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-ancestors " + ("'self'" if self.path.split('?')[0] == '/pdf-viewer.html' else "'none'"))
         for k, v in (extra or {}).items():
             if k != 'Cache-Control': self.send_header(k, v)
         self.end_headers()
         self.close_connection = True
     def do_GET(self): self.handle_api()
+    def do_HEAD(self): self.handle_api()
     def do_POST(self): self.handle_api()
     def do_PUT(self): self.handle_api()
     def handle_api(self):
@@ -325,6 +415,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         url = urllib.parse.urlsplit(self.path)
         route = url.path
         params = {k: v[0] for k, v in urllib.parse.parse_qs(url.query, keep_blank_values=True).items()}
+        if self.command == 'GET':
+            asset = viewer_asset(ASSETS, route)
+            if asset is not None:
+                return self.reply(200, asset[0], asset[1])
         if self.command == 'GET' and route in ('/', '/fonts/jakarta.ttf'):
             p = ASSETS / ('index.html' if route == '/' else 'fonts/jakarta.ttf')
             return self.reply(200, p.read_bytes(), 'text/html; charset=utf-8' if route == '/' else 'font/ttf')
@@ -354,13 +448,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, {'ok': True}, extra={'Set-Cookie': f'sid={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400' + ('; Secure' if self.headers.get('X-Forwarded-Proto') == 'https' else '')})
         if not (hmac.compare_digest(self.headers.get('X-Key', ''), d.key) or d.tokens.get(cookie, 0) > time.time()):
             return self.reply(401, {'error': 'Entre com a senha da casa'})
-        reads = {'/api/list','/api/download','/api/preview','/api/whoami','/api/inbox','/api/peers','/api/transfer/status'}
+        reads = {'/api/list','/api/media','/api/open','/api/download','/api/preview','/api/whoami','/api/inbox','/api/peers','/api/peer-send/status','/api/transfer/status'}
         expected = 'PUT' if route == '/api/transfer/chunk' else 'GET' if route in reads else 'POST'
-        if self.command != expected:
+        if self.command != expected and not (self.command == 'HEAD' and route in {'/api/open','/api/download'}):
             return self.reply(405, {'error': 'Método inválido'})
+        if route == '/api/heartbeat': return self.reply(200, d.registry.heartbeat(params.get('deviceId', ''), params.get('name', '')))
+        if route == '/api/delete-batch': return self.reply(200, d.peer_ops.delete_batch(selected(params.get('paths', ''))))
+        if route == '/api/peer-send': return self.reply(200, d.peer_ops.send(params.get('target', ''), selected(params.get('paths', ''))))
+        if route == '/api/peer-send/status': return self.reply(200, d.peer_ops.status(params.get('id', '')))
         rel = params.get('path', '')
         if route == '/api/download':
             return self.download(d.resolve(rel))
+        if route == '/api/open':
+            return self.download(d.resolve(rel), inline=True)
+        if route == '/api/media':
+            return self.reply(200,d.media(params.get('kind','all'),int(params.get('offset','0')),int(params.get('limit','60')),params.get('refresh')=='1'))
         if route == '/api/preview':
             data, etag = d.preview(d.resolve(rel), int(params.get('size', '320')), params.get('full') == '1')
             headers = {'ETag': etag, 'Content-Disposition': 'inline', 'Cache-Control': 'private, max-age=60', 'Vary': 'Cookie, X-Key'}
@@ -382,7 +484,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if route == '/api/whoami':
                 disk=shutil.disk_usage(d.root)
                 return self.reply(200, dict(name=d.name, total=disk.total, free=disk.free, root=str(d.root), shared=True))
-            if route == '/api/peers': return self.reply(200, dict(items=list(d.peers.values())))
+            if route == '/api/peers': return self.reply(200, dict(items=d.registry.list(list(d.peers.values()))))
             if route == '/api/inbox': return self.reply(200, dict(items=d.inbox))
             if route == '/api/transfer/start': return self.reply(200, d.start(rel,params.get('name',''),int(params.get('size','-1')),params.get('from','Navegador')))
             if route == '/api/transfer/status': return self.reply(200, d.state(d.meta(params.get('id',''))))
@@ -408,13 +510,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else: return self.reply(404, {'error':'Não encontrado'})
             self.reply(200,dict(ok=True))
 
-    def download(self, file):
+    def download(self, file, inline=False):
         if not file.is_file(): return self.reply(404, {'error':'Arquivo não encontrado'})
+        mime = SAFE_MIME.get(file.suffix.lower().lstrip('.')) if inline else mimetypes.guess_type(file.name)[0] or 'application/octet-stream'
+        if not mime: return self.reply(400, {'error':'Formato sem visualizador seguro; baixe o original'})
         with file.open('rb') as source:
             st=os.fstat(source.fileno()); size=st.st_size
             etag=f'"{size:x}-{st.st_mtime_ns:x}"'; start=0; end=size-1; partial=False
             header=self.headers.get('Range')
-            extra={'Accept-Ranges':'bytes','ETag':etag,'Content-Disposition':"attachment; filename*=UTF-8''"+urllib.parse.quote(file.name)}
+            extra={'Accept-Ranges':'bytes','ETag':etag,'Content-Disposition':('inline' if inline else 'attachment')+"; filename*=UTF-8''"+urllib.parse.quote(file.name)}
             if header and self.headers.get('If-Range',etag)==etag:
                 match=re.fullmatch(r'bytes=(\d*)-(\d*)',header)
                 if match and size:
@@ -427,7 +531,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.reply(416,{'error':'Intervalo inválido'},extra={'Content-Range':f'bytes */{size}'})
                 extra['Content-Range']=f'bytes {start}-{end}/{size}'
             self.send_response(206 if partial else 200)
-            self.headers_common(mimetypes.guess_type(file.name)[0] or 'application/octet-stream',end-start+1,extra)
+            self.headers_common(mime,end-start+1,extra)
+            if self.command == 'HEAD': return
             source.seek(start); remaining=end-start+1
             while remaining:
                 block=source.read(min(256*1024,remaining))

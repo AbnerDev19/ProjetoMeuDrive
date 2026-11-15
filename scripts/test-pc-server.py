@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import shutil
+import subprocess
 import unittest
 import urllib.error
 import urllib.request
@@ -99,6 +101,50 @@ class ServerTest(unittest.TestCase):
         Image.new('RGBA', (81, 40), (255, 0, 0, 255)).save(self.drive.root / 'alpha.png')
         second = self.call('/api/preview?path=alpha.png')[2]['ETag']
         self.assertNotEqual(first, second)
+
+    def test_recursive_gallery_pagination_and_safe_inline_files(self):
+        nested=self.drive.root/'DCIM'/'Camera';nested.mkdir(parents=True)
+        (nested/'photo.jpg').write_bytes(b'photo');(nested/'video.mp4').write_bytes(bytes(range(100)))
+        (self.drive.root/'paper.pdf').write_bytes(b'%PDF-test')
+        (self.drive.root/'active.svg').write_text('<svg/>')
+        private=self.drive.root/'Android'/'data';private.mkdir(parents=True);(private/'private.jpg').write_bytes(b'private')
+        (self.drive.root/'duplicate').symlink_to(nested,target_is_directory=True)
+        self.assertEqual(self.call('/api/media',auth=False)[0],401)
+        code,raw,_=self.call('/api/media?limit=2')
+        page=json.loads(raw);self.assertEqual(code,200);self.assertEqual(page['total'],3);self.assertEqual(len(page['items']),2);self.assertEqual(page['nextOffset'],2);self.assertFalse(page['partial'])
+        second=json.loads(self.call('/api/media?offset=2&limit=2')[1]);self.assertIsNone(second['nextOffset'])
+        self.assertEqual(len({item['path'] for item in page['items']+second['items']}),3)
+        self.assertEqual(json.loads(self.call('/api/media?kind=photo')[1])['items'][0]['path'],'DCIM/Camera/photo.jpg')
+        (self.drive.root/'new.png').write_bytes(b'png')
+        self.assertEqual(json.loads(self.call('/api/media?kind=photo')[1])['total'],1)
+        self.assertEqual(json.loads(self.call('/api/media?kind=photo&refresh=1')[1])['total'],2)
+        self.assertEqual(self.call('/api/media?kind=html')[0],400)
+        self.assertEqual(self.call('/api/open?path=paper.pdf',auth=False)[0],401)
+        self.assertEqual(self.call('/api/open?path=active.svg')[0],400)
+        code,raw,headers=self.call('/api/open?path=DCIM/Camera/video.mp4',headers={'Range':'bytes=10-19'})
+        self.assertEqual(code,206);self.assertEqual(raw,bytes(range(10,20)));self.assertEqual(headers['Content-Type'],'video/mp4');self.assertTrue(headers['Content-Disposition'].startswith('inline'))
+        code,raw,headers=self.call('/api/open?path=paper.pdf',method='HEAD')
+        self.assertEqual(code,200);self.assertEqual(raw,b'');self.assertEqual(headers['Content-Type'],'application/pdf');self.assertEqual(headers['Content-Length'],'9')
+
+    def test_pdf_first_page_and_video_thumbnails(self):
+        from PIL import Image
+        import pymupdf
+        pdf=self.drive.root/'document.pdf'
+        with pymupdf.open() as document:
+            page=document.new_page(width=400,height=200);page.insert_text((20,40),'MeuDrive test');document.save(pdf)
+        code,raw,headers=self.call('/api/preview?path=document.pdf&size=160')
+        self.assertEqual(code,200);self.assertEqual(headers['Content-Type'],'image/jpeg')
+        with Image.open(io.BytesIO(raw)) as im:self.assertEqual(im.size,(160,80))
+        executable=shutil.which('ffmpeg')
+        if executable:
+            video=self.drive.root/'movie.mp4'
+            subprocess.run([executable,'-v','error','-f','lavfi','-i','color=c=blue:s=160x90:d=0.2','-c:v','mpeg4','-y',str(video)],check=True)
+            code,raw,headers=self.call('/api/preview?path=movie.mp4&size=160')
+            self.assertEqual(code,200)
+            with Image.open(io.BytesIO(raw)) as im:self.assertLessEqual(max(im.size),160)
+        else:
+            (self.drive.root/'movie.mp4').write_bytes(b'video')
+            self.assertEqual(self.call('/api/preview?path=movie.mp4')[0],400)
 
     def test_login_cookie_and_logout(self):
         code,_,h=self.call('/api/login','POST',b'password=password',auth=False)
